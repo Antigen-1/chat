@@ -57,16 +57,17 @@
        'content))
 
     (define (step request)
-      (send
-       (jsexpr->bytes
-        (hasheq 'model model
-                'messages
-                `(,(make-message "system" system) ;;Set the behaviour of the assistant
-                  ,@(make-conversation (unbox user-history) (unbox assistant-history)) ;;Supply previous conversations
-                  ,(make-message "user" request) ;;Provide requests or comments for the assistant
-                  ))))
+      (define result
+        (send
+         (jsexpr->bytes
+          (hasheq 'model model
+                  'messages
+                  `(,(make-message "system" system) ;;Set the behaviour of the assistant
+                    ,@(make-conversation (unbox user-history) (unbox assistant-history)) ;;Supply previous conversations
+                    ,(make-message "user" request) ;;Provide requests or comments for the assistant
+                    )))))
       (insert-history request user-history)
-      (define response (retrieve-response (bytes->jsexpr (recv))))
+      (define response (retrieve-response (bytes->jsexpr (recv result))))
       (insert-history response assistant-history)
       response)
     (public step)))
@@ -76,22 +77,23 @@
   ;; or with `raco test`. The code here does not run when this file is
   ;; required by another module.
 
-  (define-values (in out) (make-pipe))
   (define ctx (new context%
                    (model "gpt-3.5-turbo")
                    (system "You are a helpful assistant.")
                    (send
-                    (lambda (bstr)
-                      (write-json
-                       (hasheq
-                        'choices
-                        (list
+                    (let-values (((in out) (make-pipe)))
+                      (lambda (bstr)
+                        (write-json
                          (hasheq
-                          'message
-                          (hasheq 'content
-                                  (hash-ref (bytes->jsexpr bstr) 'messages)))))
-                       out)))
-                   (recv (lambda () (jsexpr->bytes (read-json in))))))
+                          'choices
+                          (list
+                           (hasheq
+                            'message
+                            (hasheq 'content
+                                    (hash-ref (bytes->jsexpr bstr) 'messages)))))
+                         out)
+                        in)))
+                   (recv (lambda (port) (jsexpr->bytes (read-json port))))))
   (define response (send ctx step "Hello."))
   (check-match response
                (list (hash-table ('role "system") ('content "You are a helpful assistant."))
@@ -122,13 +124,11 @@
                           (format "Authorization: Bearer ~a" (unbox token))))
     ;;Functions
     (define-values (sd rv)
-      (let ((port-box (box #f))
-            (raise-network (lambda (msg) (raise (make-exn:fail:network msg (current-continuation-marks))))))
+      (let ((raise-network (lambda (msg) (raise (make-exn:fail:network msg (current-continuation-marks))))))
         (values (lambda (bstr)
-                  (set-box! port-box (post-impure-port url bstr headers)))
-                (lambda ()
-                  (let* ((port (unbox port-box))
-                         (header (regexp-match #rx"^HTTP/1\\.[01] ([0-9]+)" (purify-port port))))
+                  (post-impure-port url bstr headers))
+                (lambda (port)
+                  (let ((header (regexp-match #rx"^HTTP/1\\.[01] ([0-9]+)" (purify-port port))))
                     (cond ((not header) (raise-network "Mis-formatted reply is met."))
                           ((not (string=? (cadr header) "200"))
                            (raise-network (format "Status code: ~a." (cadr header)))))
