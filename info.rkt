@@ -1,7 +1,7 @@
 #lang info
 (define collection "chat")
 (define deps '("base"))
-(define build-deps '("scribble-lib" "racket-doc" "rackunit-lib" "json"))
+(define build-deps '("scribble-lib" "racket-doc" "rackunit-lib"))
 (define scribblings '(("scribblings/chat.scrbl" ())))
 (define pkg-desc "Description Here")
 (define version "0.0")
