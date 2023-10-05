@@ -7,4 +7,4 @@
 (define version "0.0")
 (define pkg-authors '(hin))
 (define license '(Apache-2.0 OR MIT))
-(define raco-commands (list "chat" '(submod chat main) "Chat with chatgpt" #f))
+(define raco-commands '(("chat" '(submod chat main) "Chat with chatgpt" #f)))
