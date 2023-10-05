@@ -25,14 +25,77 @@
 
 ;; Code here
 
+(require racket/class json)
 
+;;Store the context
+(define context%
+  (class object%
+    (init-field model system send recv)
+
+    (super-new)
+
+    (define user-history (box null))
+    (define assistant-history (box null))
+
+    ;;Utilities
+    (define (insert-history str bx) (set-box! bx (cons str (unbox bx))))
+    (define (make-message role cont)
+      (hasheq 'role role 'content cont))
+    (define (make-conversation user assis)
+      (reverse
+       (foldl
+        (lambda (u a i) (cons (make-message "assistant" a) (cons (make-message "user" u) i)))
+        null
+        user assis)))
+    (define (retrieve-response js)
+      (hash-ref
+       (hash-ref
+        (list-ref
+         (hash-ref js 'choices)
+         0)
+        'message)
+       'content))
+
+    (define (step request)
+      (send
+       (jsexpr->bytes
+        (hasheq 'model model
+                'messages
+                `(,(make-message "system" system) ;;Set the behaviour of the assistant
+                  ,@(make-conversation (unbox user-history) (unbox assistant-history)) ;;Supply previous conversations
+                  ,(make-message "user" request) ;;Provide requests or comments for the assistant
+                  ))))
+      (insert-history request user-history)
+      (define response (retrieve-response (bytes->jsexpr (recv))))
+      (insert-history response assistant-history)
+      response)
+    (public step)))
 
 (module+ test
   ;; Any code in this `test` submodule runs when this file is run using DrRacket
   ;; or with `raco test`. The code here does not run when this file is
   ;; required by another module.
 
-  (check-equal? (+ 2 2) 4))
+  (define-values (in out) (make-pipe))
+  (define ctx (new context%
+                   (model "gpt-3.5-turbo")
+                   (system "You are a helpful assistant.")
+                   (send
+                    (lambda (bstr)
+                      (write-json
+                       (hasheq
+                        'choices
+                        (list
+                         (hasheq
+                          'message
+                          (hasheq 'content
+                                  (hash-ref (bytes->jsexpr bstr) 'messages)))))
+                       out)))
+                   (recv (lambda () (jsexpr->bytes (read-json in))))))
+  (define response (send ctx step "Hello."))
+  (check-match response
+               (list (hash-table ('role "system") ('content "You are a helpful assistant."))
+                     (hash-table ('role "user") ('content "Hello.")))))
 
 (module+ main
   ;; (Optional) main submodule. Put code here if you need it to be executed when
@@ -40,11 +103,46 @@
   ;; does not run when this file is required by another module. Documentation:
   ;; http://docs.racket-lang.org/guide/Module_Syntax.html#%28part._main-and-test%29
 
-  (require racket/cmdline)
-  (define who (box "world"))
+  (require racket/cmdline racket/port raco/command-name net/url)
+  (define model (box "gpt-3.5-turbo"))
+  (define system (box "You are a helpful assistant."))
+  (define token (box #f))
   (command-line
-    #:program "my-program"
+    #:program (short-program+command-name)
     #:once-each
-    [("-n" "--name") name "Who to say hello to" (set-box! who name)]
+    [("-m" "--model") m "Specify the model." (set-box! model m)]
+    [("-s" "--system") s "Specify the system prompt." (set-box! system s)]
+    [("-t" "--token") s "Sepcify the openai token." (set-box! token s)]
     #:args ()
-    (printf "hello ~a~n" (unbox who))))
+    ;;Check
+    (cond ((not (unbox token)) (raise (make-exn:fail:user "You must provide your openai token." (current-continuation-marks)))))
+    ;;Cache
+    (define url (string->url "https://api.openai.com/v1/chat/completions"))
+    (define headers (list "Content-Type: application/json"
+                          (format "Authorization: Bearer ~a" (unbox token))))
+    ;;Functions
+    (define-values (sd rv)
+      (let ((port-box (box #f))
+            (raise-network (lambda (msg) (raise (make-exn:fail:network msg (current-continuation-marks))))))
+        (values (lambda (bstr)
+                  (set-box! port-box (post-impure-port url bstr headers)))
+                (lambda ()
+                  (let* ((port (unbox port-box))
+                         (header (regexp-match #rx"^HTTP/1\\.[01] ([0-9]+)" (purify-port port))))
+                    (cond ((not header) (raise-network "Mis-formatted reply is met."))
+                          ((not (string=? (cadr header) "200"))
+                           (raise-network (format "Status code: ~a." (cadr header)))))
+                    (port->bytes port))))))
+    ;;History
+    (define ctx (new context%
+                     (model (unbox model))
+                     (system (unbox system))
+                     (send sd)
+                     (recv rv)))
+    ;;REPL
+    (displayln (format "I'm ~a. Can I help you?" (unbox model)))
+    (with-handlers ((exn:break? void))
+      (let loop ()
+        (display "> ")
+        (displayln (send ctx step (read-line)))
+        (loop)))))

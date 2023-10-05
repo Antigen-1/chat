@@ -1,9 +1,10 @@
 #lang info
 (define collection "chat")
 (define deps '("base"))
-(define build-deps '("scribble-lib" "racket-doc" "rackunit-lib"))
+(define build-deps '("scribble-lib" "racket-doc" "rackunit-lib" "json"))
 (define scribblings '(("scribblings/chat.scrbl" ())))
 (define pkg-desc "Description Here")
 (define version "0.0")
 (define pkg-authors '(hin))
 (define license '(Apache-2.0 OR MIT))
+(define raco-commands (list "chat" '(submod chat main) "Chat with chatgpt" #f))
