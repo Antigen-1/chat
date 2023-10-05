@@ -108,12 +108,14 @@
   (require racket/cmdline racket/port raco/command-name net/url)
   (define model (box "gpt-3.5-turbo"))
   (define system (box "You are a helpful assistant."))
+  (define prompt? (box #t))
   (define token (box #f))
   (command-line
     #:program (short-program+command-name)
     #:once-each
     [("-m" "--model") m "Specify the model." (set-box! model m)]
     [("-s" "--system") s "Specify the system prompt." (set-box! system s)]
+    [("-n" "--no-prompt") "Disable the > prompt in the REPL." (set-box! prompt? #f)]
     [("-t" "--token") s "Sepcify the openai token." (set-box! token s)]
     #:args ()
     ;;Check
@@ -143,6 +145,6 @@
     (displayln (format "I'm ~a. Can I help you?" (unbox model)))
     (with-handlers ((exn:break? void))
       (let loop ()
-        (display "> ")
+        (cond ((unbox prompt?) (display "> ")))
         (displayln (send ctx step (read-line)))
         (loop)))))
