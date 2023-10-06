@@ -71,6 +71,7 @@
       (insert-history response assistant-history)
       response)
     (public step)))
+(define step (generic context% step))
 
 (module+ test
   ;; Any code in this `test` submodule runs when this file is run using DrRacket
@@ -94,7 +95,7 @@
                          out)
                         in)))
                    (recv (lambda (port) (jsexpr->bytes (read-json port))))))
-  (define response (send ctx step "Hello."))
+  (define response (send-generic ctx step "Hello."))
   (check-match response
                (list (hash-table ('role "system") ('content "You are a helpful assistant."))
                      (hash-table ('role "user") ('content "Hello.")))))
@@ -126,15 +127,15 @@
                           (format "Authorization: Bearer ~a" (unbox token))))
     ;;Functions
     (define-values (sd rv)
-      (let ((raise-network (lambda (msg) (raise (make-exn:fail:network msg (current-continuation-marks))))))
-        (values (lambda (bstr)
-                  (post-impure-port url bstr headers))
+      (values (lambda (bstr)
+                (post-impure-port url bstr headers))
+              (let ((raise-network (lambda (msg) (raise (make-exn:fail:network msg (current-continuation-marks))))))
                 (lambda (port)
                   (let ((header (regexp-match #rx"^HTTP/1\\.[01] ([0-9]+)" (purify-port port))))
                     (cond ((not header) (raise-network "Mis-formatted reply is met."))
                           ((not (string=? (cadr header) "200"))
-                           (raise-network (format "Status code: ~a." (cadr header)))))
-                    (port->bytes port))))))
+                           (raise-network (format "HTTP status code: ~a." (cadr header))))
+                          (else (port->bytes port))))))))
     ;;History
     (define ctx (new context%
                      (model (unbox model))
@@ -146,5 +147,5 @@
     (with-handlers ((exn:break? void))
       (let loop ()
         (cond ((unbox prompt?) (display "> ")))
-        (displayln (send ctx step (read-line)))
+        (displayln (send-generic ctx step (read-line)))
         (loop)))))
