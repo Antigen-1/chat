@@ -25,28 +25,18 @@
 
 ;; Code here
 
-(require racket/class json)
+(require racket/class racket/stream json)
 
 ;;Store the context
 (define context%
   (class object%
-    (init-field model system send recv)
+    (init-field model system input send recv prob)
 
     (super-new)
 
-    (define user-history (box null))
-    (define assistant-history (box null))
-
     ;;Utilities
-    (define (insert-history str bx) (set-box! bx (cons str (unbox bx))))
     (define (make-message role cont)
       (hasheq 'role role 'content cont))
-    (define (make-conversation user assis)
-      (reverse
-       (foldl
-        (lambda (u a i) (cons (make-message "assistant" a) (cons (make-message "user" u) i)))
-        null
-        user assis)))
     (define (retrieve-response js)
       (hash-ref
        (hash-ref
@@ -55,50 +45,64 @@
          0)
         'message)
        'content))
+    (define (stream-map* proc . ss)
+      (if (ormap stream-empty? ss)
+          empty-stream
+          (stream-cons #:eager (apply proc (map stream-first ss))
+                       (apply stream-map* proc (map stream-rest ss)))))
 
-    (define (step request)
-      (define result
-        (send
-         (jsexpr->bytes
-          (hasheq 'model model
-                  'messages
-                  `(,(make-message "system" system) ;;Set the behaviour of the assistant
-                    ,@(make-conversation (unbox user-history) (unbox assistant-history)) ;;Supply previous conversations
-                    ,(make-message "user" request) ;;Provide requests or comments for the assistant
-                    )))))
-      (insert-history request user-history)
-      (define response (retrieve-response (bytes->jsexpr (recv result))))
-      (insert-history response assistant-history)
-      response)
-    (public step)))
-(define step (generic context% step))
+    ;;A signal-processing system represented as an infinite stream
+    (define (make-history-stream input)
+      (letrec ((history-stream
+                (stream-cons #:eager
+                             (list (make-message "system" system))
+                             (stream-map*
+                              (lambda (history request)
+                                (define result
+                                  (send
+                                   (jsexpr->bytes
+                                    (hasheq 'model model
+                                            'messages (reverse (cons (make-message "user" request) history))))))
+                                (define response (retrieve-response (bytes->jsexpr (recv result))))
+                                (prob response)
+                                (cons (make-message "assistant" response)
+                                      (cons (make-message "user" request) history)))
+                              history-stream
+                              input))))
+        history-stream))
+
+    ;;Main process
+    (for ((_ (in-stream (make-history-stream input))))
+      (void))))
 
 (module+ test
   ;; Any code in this `test` submodule runs when this file is run using DrRacket
   ;; or with `raco test`. The code here does not run when this file is
   ;; required by another module.
 
-  (define ctx (new context%
-                   (model "gpt-3.5-turbo")
-                   (system "You are a helpful assistant.")
-                   (send
-                    (let-values (((in out) (make-pipe)))
-                      (lambda (bstr)
-                        (write-json
-                         (hasheq
-                          'choices
-                          (list
-                           (hasheq
-                            'message
-                            (hasheq 'content
-                                    (hash-ref (bytes->jsexpr bstr) 'messages)))))
-                         out)
-                        in)))
-                   (recv (lambda (port) (jsexpr->bytes (read-json port))))))
-  (define response (send-generic ctx step "Hello."))
-  (check-match response
-               (list (hash-table ('role "system") ('content "You are a helpful assistant."))
-                     (hash-table ('role "user") ('content "Hello.")))))
+  (void
+   (new context%
+        (model "gpt-3.5-turbo")
+        (system "You are a helpful assistant.")
+        (input (in-list (list "Hello.")))
+        (send
+         (let-values (((in out) (make-pipe)))
+           (lambda (bstr)
+             (write-json
+              (hasheq
+               'choices
+               (list
+                (hasheq
+                 'message
+                 (hasheq 'content
+                         (hash-ref (bytes->jsexpr bstr) 'messages)))))
+              out)
+             in)))
+        (recv (lambda (port) (jsexpr->bytes (read-json port))))
+        (prob (lambda (response)
+                (check-match response
+                             (list (hash-table ('role "system") ('content "You are a helpful assistant."))
+                                   (hash-table ('role "user") ('content "Hello.")))))))))
 
 (module+ main
   ;; (Optional) main submodule. Put code here if you need it to be executed when
@@ -106,7 +110,7 @@
   ;; does not run when this file is required by another module. Documentation:
   ;; http://docs.racket-lang.org/guide/Module_Syntax.html#%28part._main-and-test%29
 
-  (require racket/cmdline racket/port racket/stream racket/contract raco/command-name net/url)
+  (require racket/cmdline racket/port racket/contract raco/command-name net/url)
   (define model (box "gpt-3.5-turbo"))
   (define system (box "You are a helpful assistant."))
   (define interact? (box #t))
@@ -142,21 +146,25 @@
                            (raise-network (format "HTTP status code: ~a." (cadr header))))
                           (else (port->bytes port))))))))
     ;;History
-    (define ctx (new context%
-                     (model (unbox model))
-                     (system (unbox system))
-                     (send sd)
-                     (recv rv)))
+    (define (make-context input)
+      (new context%
+           (model (unbox model))
+           (system (unbox system))
+           (input input)
+           (send sd)
+           (recv rv)
+           (prob displayln)))
     ;;REPL
     (with-handlers ((exn:break? void))
-      (cond ((unbox module) (define/contract input-stream (stream/c string?) (dynamic-require (unbox module) 'input-stream))
-                            (for ((str (in-stream input-stream)))
-                              (displayln (send-generic ctx step str))))
-            (else
-             ;;The interactive mode works only when `(unbox module)` returns false.
-             (cond ((unbox interact?) (displayln (format "I'm ~a. Can I help you?" (unbox model)))))
-             (for ((line (in-producer (lambda ()
-                                        (cond ((unbox interact?) (display "> ")))
-                                        (read-line))
-                                      eof)))
-               (displayln (send-generic ctx step line))))))))
+      (void
+       (make-context
+        (cond ((unbox module)
+               (define/contract input-stream (stream/c string?) (dynamic-require (unbox module) 'input-stream))
+               input-stream)
+              (else
+               ;;The interactive mode works only when `(unbox module)` returns false.
+               (cond ((unbox interact?) (displayln (format "I'm ~a. Can I help you?" (unbox model)))))
+               (sequence->stream
+                (in-port (lambda (in)
+                           (cond ((unbox interact?) (display "> ")))
+                           (read-line in)))))))))))
