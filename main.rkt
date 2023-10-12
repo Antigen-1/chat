@@ -29,10 +29,10 @@
 (provide token-logger total-token-logger prompt-token-logger completion-token-logger)
 
 ;;Loggers
-(define token-logger (make-logger 'Tokens (current-logger)))
-(define total-token-logger (make-logger 'TotalTokens token-logger))
-(define prompt-token-logger (make-logger 'PromptTokens token-logger))
-(define completion-token-logger (make-logger 'CompletionTokens token-logger))
+(define token-logger (make-logger #f (current-logger)))
+(define total-token-logger (make-logger #f token-logger))
+(define prompt-token-logger (make-logger #f token-logger))
+(define completion-token-logger (make-logger #f token-logger))
 
 ;;Context
 (define context%
@@ -80,9 +80,9 @@
                                 ;;Log token usage
                                 (call-with-values (lambda () (retrieve-usage response))
                                                   (lambda (t p c)
-                                                    (log-message total-token-logger 'info #f (format "Total tokens: ~a" t))
-                                                    (log-message prompt-token-logger 'info #f (format "Prompt tokens: ~a" p))
-                                                    (log-message completion-token-logger 'info #f (format "Completion tokens: ~a" c))))
+                                                    (log-message total-token-logger 'info 'TotalTokens (format "~a" t))
+                                                    (log-message prompt-token-logger 'info 'PromptTokens (format "~a" p))
+                                                    (log-message completion-token-logger 'info 'CompletionTokens (format "~a" c))))
                                 ;;Inform the probe and return updated history
                                 (let ((content (retrieve-content response)))
                                   (prob content)
@@ -134,9 +134,9 @@
                                    (hash-table ('role "user") ('content "Hello."))))))))
 
   (define (log-message=? v1 v2) (check-equal? (vector-copy v1 0 2) v2))
-  (log-message=? (sync log-receiver) (vector 'info "Total tokens: 6"))
-  (log-message=? (sync log-receiver) (vector 'info "Prompt tokens: 6"))
-  (log-message=? (sync log-receiver) (vector 'info "Completion tokens: 0")))
+  (log-message=? (sync log-receiver) (vector 'info "TotalTokens: 6"))
+  (log-message=? (sync log-receiver) (vector 'info "PromptTokens: 6"))
+  (log-message=? (sync log-receiver) (vector 'info "CompletionTokens: 0")))
 
 (module+ main
   ;; (Optional) main submodule. Put code here if you need it to be executed when
