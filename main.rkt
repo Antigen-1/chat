@@ -27,6 +27,13 @@
 
 (require racket/class racket/stream json)
 
+;;Loggers
+(define token-logger (make-logger "Tokens" (current-logger)))
+(define total-token-logger (make-logger "TotalTokens" token-logger))
+(define prompt-token-logger (make-logger "PromptTokens" token-logger))
+(define completion-token-logger (make-logger "CompletionTokens" token-logger))
+
+;;Context
 (define context%
   (class object%
     (init-field model system input send recv prob)
@@ -36,7 +43,7 @@
     ;;Utilities
     (define (make-message role cont)
       (hasheq 'role role 'content cont))
-    (define (retrieve-response js)
+    (define (retrieve-content js)
       (hash-ref
        (hash-ref
         (list-ref
@@ -44,6 +51,11 @@
          0)
         'message)
        'content))
+    (define (retrieve-usage js)
+      (let ((table (hash-ref js 'usage)))
+        (values (hash-ref table 'total_tokens)
+                (hash-ref table 'prompt_tokens)
+                (hash-ref table 'completion_tokens))))
     (define (stream-map* proc . ss)
       (if (ormap stream-empty? ss)
           empty-stream
@@ -57,15 +69,24 @@
                              (list (make-message "system" system))
                              (stream-map*
                               (lambda (history request)
+                                ;;Send and receive
                                 (define result
                                   (send
                                    (jsexpr->bytes
                                     (hasheq 'model model
                                             'messages (reverse (cons (make-message "user" request) history))))))
-                                (define response (retrieve-response (bytes->jsexpr (recv result))))
-                                (prob response)
-                                (cons (make-message "assistant" response)
-                                      (cons (make-message "user" request) history)))
+                                (define response (bytes->jsexpr (recv result)))
+                                ;;Log token usage
+                                (call-with-values (lambda () (retrieve-usage response))
+                                                  (lambda (t p c)
+                                                    (log-message total-token-logger 'info #f (format "Total tokens: ~a" t))
+                                                    (log-message prompt-token-logger 'info #f (format "Prompt tokens: ~a" p))
+                                                    (log-message completion-token-logger 'info #f (format "Completion tokens: ~a" c))))
+                                ;;Inform the probe and return updated history
+                                (let ((content (retrieve-content response)))
+                                  (prob content)
+                                  (cons (make-message "assistant" content)
+                                        (cons (make-message "user" request) history))))
                               history-stream
                               input))))
         history-stream))
