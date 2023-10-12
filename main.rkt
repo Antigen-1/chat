@@ -26,6 +26,7 @@
 ;; Code here
 
 (require racket/class racket/stream json)
+(provide token-logger total-token-logger prompt-token-logger completion-token-logger)
 
 ;;Loggers
 (define token-logger (make-logger 'Tokens (current-logger)))
@@ -100,6 +101,10 @@
   ;; or with `raco test`. The code here does not run when this file is
   ;; required by another module.
 
+  (require racket/vector)
+
+  (define log-receiver (make-log-receiver token-logger 'info))
+
   (void
    (new context%
         (model "gpt-3.5-turbo")
@@ -110,6 +115,10 @@
            (lambda (bstr)
              (write-json
               (hasheq
+               'usage
+               (hasheq 'total_tokens 6
+                       'prompt_tokens 6
+                       'completion_tokens 0)
                'choices
                (list
                 (hasheq
@@ -122,7 +131,12 @@
         (prob (lambda (response)
                 (check-match response
                              (list (hash-table ('role "system") ('content "You are a helpful assistant."))
-                                   (hash-table ('role "user") ('content "Hello.")))))))))
+                                   (hash-table ('role "user") ('content "Hello."))))))))
+
+  (define (log-message=? v1 v2) (check-equal? (vector-copy v1 0 2) v2))
+  (log-message=? (sync log-receiver) (vector 'info "Total tokens: 6"))
+  (log-message=? (sync log-receiver) (vector 'info "Prompt tokens: 6"))
+  (log-message=? (sync log-receiver) (vector 'info "Completion tokens: 0")))
 
 (module+ main
   ;; (Optional) main submodule. Put code here if you need it to be executed when
