@@ -157,7 +157,7 @@
     [("-s" "--system") s "Specify the system prompt." (set-box! system s)]
     [("-n" "--no-interact") "Turn off the interactive mode." (set-box! interact? #f)]
     [("-t" "--token") s "Sepcify the openai token." (set-box! token s)]
-    [("-p" "--module-path") p "Specify the module path to be imported dynamically." (set-box! module p)]
+    [("-p" "--module-path") p "Specify the module path to be imported dynamically." (set-box! module (string->path p))]
     #:ps
     "The interactive mode is automatically turned off when `-p` or `--module-path` is supplied."
     "The module to be dynamically imported must provide `input-stream` which is a stream of strings."
