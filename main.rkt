@@ -106,18 +106,23 @@
   ;; does not run when this file is required by another module. Documentation:
   ;; http://docs.racket-lang.org/guide/Module_Syntax.html#%28part._main-and-test%29
 
-  (require racket/cmdline racket/port raco/command-name net/url)
+  (require racket/cmdline racket/port racket/stream racket/contract raco/command-name net/url)
   (define model (box "gpt-3.5-turbo"))
   (define system (box "You are a helpful assistant."))
   (define interact? (box #t))
   (define token (box #f))
+  (define module (box #f))
   (command-line
     #:program (short-program+command-name)
     #:once-each
     [("-m" "--model") m "Specify the model." (set-box! model m)]
     [("-s" "--system") s "Specify the system prompt." (set-box! system s)]
-    [("-n" "--no-interact") "Disable the greeting and > prompts in the REPL." (set-box! interact? #f)]
+    [("-n" "--no-interact") "Turn off the interactive mode." (set-box! interact? #f)]
     [("-t" "--token") s "Sepcify the openai token." (set-box! token s)]
+    [("-p" "--module-path") p "Specify the module path to be imported dynamically." (set-box! module p)]
+    #:ps
+    "The interactive mode is automatically turned off when `-p` or `--module-path` is supplied."
+    "The module to be dynamically imported must provide `input-stream` which is a stream of strings."
     #:args ()
     ;;Check
     (cond ((not (unbox token)) (raise (make-exn:fail:user "You must provide your openai token." (current-continuation-marks)))))
@@ -143,10 +148,15 @@
                      (send sd)
                      (recv rv)))
     ;;REPL
-    (cond ((unbox interact?) (displayln (format "I'm ~a. Can I help you?" (unbox model)))))
-    (with-handlers (((lambda (v) (or (eof-object? v) (exn:break? v))) void))
-      (let loop ()
-        (cond ((unbox interact?) (display "> ")))
-        (define line (read-line))
-        (displayln (send-generic ctx step (if (string? line) line (raise line))))
-        (loop)))))
+    (with-handlers ((exn:break? void))
+      (cond ((unbox module) (define/contract input-stream (stream/c string?) (dynamic-require (unbox module) 'input-stream))
+                            (for ((str (in-stream input-stream)))
+                              (displayln (send-generic ctx step str))))
+            (else
+             ;;The interactive mode works only when `(unbox module)` returns false.
+             (cond ((unbox interact?) (displayln (format "I'm ~a. Can I help you?" (unbox model)))))
+             (for ((line (in-producer (lambda ()
+                                        (cond ((unbox interact?) (display "> ")))
+                                        (read-line))
+                                      eof)))
+               (displayln (send-generic ctx step line))))))))
