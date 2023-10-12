@@ -28,10 +28,10 @@
 (require racket/class racket/stream json)
 
 ;;Loggers
-(define token-logger (make-logger "Tokens" (current-logger)))
-(define total-token-logger (make-logger "TotalTokens" token-logger))
-(define prompt-token-logger (make-logger "PromptTokens" token-logger))
-(define completion-token-logger (make-logger "CompletionTokens" token-logger))
+(define token-logger (make-logger 'Tokens (current-logger)))
+(define total-token-logger (make-logger 'TotalTokens token-logger))
+(define prompt-token-logger (make-logger 'PromptTokens token-logger))
+(define completion-token-logger (make-logger 'CompletionTokens token-logger))
 
 ;;Context
 (define context%
