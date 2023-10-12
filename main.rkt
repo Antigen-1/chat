@@ -27,7 +27,6 @@
 
 (require racket/class racket/stream json)
 
-;;Store the context
 (define context%
   (class object%
     (init-field model system input send recv prob)
@@ -71,7 +70,7 @@
                               input))))
         history-stream))
 
-    ;;Main process
+    ;;The main process
     (for ((_ (in-stream (make-history-stream input))))
       (void))))
 
@@ -130,11 +129,13 @@
     #:args ()
     ;;Check
     (cond ((not (unbox token)) (raise (make-exn:fail:user "You must provide your openai token." (current-continuation-marks)))))
-    ;;Cache
+
+    ;;Constants
     (define url (string->url "https://api.openai.com/v1/chat/completions"))
     (define headers (list "Content-Type: application/json"
                           (format "Authorization: Bearer ~a" (unbox token))))
-    ;;Functions
+
+    ;;Functions for HTTPS communication
     (define-values (sd rv)
       (values (lambda (bstr)
                 (post-impure-port url bstr headers))
@@ -145,7 +146,8 @@
                           ((not (string=? (cadr header) "200"))
                            (raise-network (format "HTTP status code: ~a." (cadr header))))
                           (else (port->bytes port))))))))
-    ;;History
+
+    ;;A constructor of context%
     (define (make-context input)
       (new context%
            (model (unbox model))
@@ -154,7 +156,9 @@
            (send sd)
            (recv rv)
            (prob displayln)))
-    ;;REPL
+
+    ;;The main loop
+    ;;The interactive mode works only when `(unbox module)` returns false
     (with-handlers ((exn:break? void))
       (void
        (make-context
@@ -162,7 +166,6 @@
                (define/contract input-stream (stream/c string?) (dynamic-require (unbox module) 'input-stream))
                input-stream)
               (else
-               ;;The interactive mode works only when `(unbox module)` returns false.
                (cond ((unbox interact?) (displayln (format "I'm ~a. Can I help you?" (unbox model)))))
                (sequence->stream
                 (in-port (lambda (in)
