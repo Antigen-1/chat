@@ -67,32 +67,31 @@
     (define (make-history-stream input)
       (letrec ((history-stream
                 (stream-cons #:eager
-                             (list (make-message "system" system))
+                             (list 0 (make-message "system" system))
                              (stream-map*
                               (lambda (history request)
+                                (define new-message (make-message "user" request))
                                 ;;Send and receive
                                 (define response
                                   (send/recv
                                    (hasheq 'model model
-                                           'messages (reverse (cons (make-message "user" request) history)))))
-                                ;;Log token usage
-                                (call-with-values (lambda () (retrieve-usage response))
-                                                  (lambda (t p c)
-                                                    (log-message total-token-logger 'info 'TotalTokens (format "~a" t))
-                                                    (log-message prompt-token-logger 'info 'PromptTokens (format "~a" p))
-                                                    (log-message completion-token-logger 'info 'CompletionTokens (format "~a" c))))
-                                ;;Inform the probe and return updated history
-                                (let ((content (retrieve-content response)))
+                                           'messages (reverse (cons new-message (cdr history))))))
+                                ;;Inform probes and loggers, and return updated history
+                                (let-values (((content) (retrieve-content response))
+                                             ((total prompt completion) (retrieve-usage response)))
+
                                   (prob content)
-                                  (cons (make-message "assistant" content)
-                                        (cons (make-message "user" request) history))))
+                                  (log-message total-token-logger 'info 'TotalTokens (format "~a" total))
+                                  (log-message prompt-token-logger 'info 'PromptTokens (format "~a" prompt))
+                                  (log-message completion-token-logger 'info 'CompletionTokens (format "~a" completion))
+
+                                  (cons (+ total (car history)) (cons (make-message "assistant" content) (cons new-message (cdr history))))))
                               history-stream
                               input))))
         history-stream))
 
-    ;;The main process
-    (for ((_ (in-stream (make-history-stream input))))
-      (void))))
+    ;;Log the total amount of all tokens
+    (log-message token-logger 'info 'AllTokens (format "~a" (caar (reverse (stream->list (make-history-stream input))))))))
 
 (module+ test
   ;; Any code in this `test` submodule runs when this file is run using DrRacket
@@ -129,7 +128,8 @@
   (define (log-message=? v1 v2) (check-equal? (vector-copy v1 0 2) v2))
   (log-message=? (sync log-receiver) (vector 'info "TotalTokens: 6"))
   (log-message=? (sync log-receiver) (vector 'info "PromptTokens: 6"))
-  (log-message=? (sync log-receiver) (vector 'info "CompletionTokens: 0")))
+  (log-message=? (sync log-receiver) (vector 'info "CompletionTokens: 0"))
+  (log-message=? (sync log-receiver) (vector 'info "AllTokens: 6")))
 
 (module+ main
   ;; (Optional) main submodule. Put code here if you need it to be executed when
