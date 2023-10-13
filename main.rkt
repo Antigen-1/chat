@@ -211,18 +211,17 @@
 
     ;;The main loop
     ;;The interactive mode works only when `(unbox module)` returns false
-    (with-handlers ((exn:break? void))
-      (void
-       (make-context
-        (cond ((unbox module)
-               (define/contract input-stream (stream/c string?) (dynamic-require (unbox module) 'input-stream))
-               input-stream)
-              (else
-               (cond ((unbox interact?) (displayln (format "I'm ~a. Can I help you?" (unbox model)))))
-               (sequence->stream
-                (in-port (lambda (in)
-                           (cond ((unbox interact?) (display "> ")))
-                           (read-line in)))))))))
+    (void
+     (make-context
+      (cond ((unbox module)
+             (define/contract input-stream (stream/c string?) (dynamic-require (unbox module) 'input-stream))
+             input-stream)
+            (else
+             (cond ((unbox interact?) (displayln (format "I'm ~a. Can I help you?" (unbox model)))))
+             (sequence->stream
+              (in-port (lambda (in)
+                         (cond ((unbox interact?) (display "> ")))
+                         (read-line in))))))))
 
     ;;Finalization
     (session-close! session)))
