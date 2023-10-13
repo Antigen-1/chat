@@ -25,7 +25,7 @@
 
 ;; Code here
 
-(require racket/class racket/stream json)
+(require racket/class racket/stream)
 (provide token-logger total-token-logger prompt-token-logger completion-token-logger)
 
 ;;Loggers
@@ -71,12 +71,10 @@
                              (stream-map*
                               (lambda (history request)
                                 ;;Send and receive
-                                (define result
+                                (define response
                                   (send/recv
-                                   (jsexpr->bytes
-                                    (hasheq 'model model
-                                            'messages (reverse (cons (make-message "user" request) history))))))
-                                (define response (bytes->jsexpr result))
+                                   (hasheq 'model model
+                                           'messages (reverse (cons (make-message "user" request) history)))))
                                 ;;Log token usage
                                 (call-with-values (lambda () (retrieve-usage response))
                                                   (lambda (t p c)
@@ -111,19 +109,18 @@
         (system "You are a helpful assistant.")
         (input (in-list (list "Hello.")))
         (send/recv
-         (lambda (bstr)
-           (jsexpr->bytes
-            (hasheq
-             'usage
-             (hasheq 'total_tokens 6
-                     'prompt_tokens 6
-                     'completion_tokens 0)
-             'choices
-             (list
-              (hasheq
-               'message
-               (hasheq 'content
-                       (hash-ref (bytes->jsexpr bstr) 'messages))))))))
+         (lambda (js)
+           (hasheq
+            'usage
+            (hasheq 'total_tokens 6
+                    'prompt_tokens 6
+                    'completion_tokens 0)
+            'choices
+            (list
+             (hasheq
+              'message
+              (hasheq 'content
+                      (hash-ref js 'messages)))))))
         (prob (lambda (response)
                 (check-match response
                              (list (hash-table ('role "system") ('content "You are a helpful assistant."))
@@ -140,7 +137,9 @@
   ;; does not run when this file is required by another module. Documentation:
   ;; http://docs.racket-lang.org/guide/Module_Syntax.html#%28part._main-and-test%29
 
-  (require racket/cmdline racket/port racket/contract raco/command-name http123)
+  (require racket/cmdline racket/contract racket/match
+           raco/command-name
+           net/http-easy net/url net/cookies)
   (define model (box "gpt-3.5-turbo"))
   (define system (box "You are a helpful assistant."))
   (define interact? (box #t))
@@ -161,17 +160,39 @@
     ;;Check
     (cond ((not (unbox token)) (raise (make-exn:fail:user "You must provide your openai token." (current-continuation-marks)))))
 
-    ;;Functions for HTTPS communication
-    (define sd/rv
-      (let* ((client (http-client #:add-header
-                                  `((#"content-type" #"application/json")
-                                    (#"authorization"
-                                     ,(string->bytes/utf-8 (format "Bearer ~a" (unbox token)))))
-                                  #:add-content-handlers
-                                  `((application/json ,port->bytes))))
+    ;;A procedure used for HTTPS communication
+    ;;Support proxies and cookie storage
+    (define send/recv
+      (let* ((proxy-server (proxy-server-for "https"))
+             (proxy (if proxy-server
+                        (match proxy-server
+                          ((list scheme host port)
+                           (make-https-proxy
+                            (url->string
+                             (make-url scheme
+                                       #f
+                                       host
+                                       port
+                                       #f
+                                       null
+                                       null
+                                       #f)))))
+                        null))
+             (jar (new list-cookie-jar%))
+             (session (make-session #:proxies (list proxy) #:cookie-jar jar))
              (url "https://api.openai.com/v1/chat/completions"))
-        (lambda (bstr)
-          (send client handle (request 'POST url null bstr)))))
+        (plumber-add-flush! (current-plumber) (lambda (_) (session-close! session)))
+        (lambda (input)
+          (match
+           (session-request
+            session url
+            #:auth (bearer-auth (unbox token))
+            #:method 'post
+            #:data (json-payload input))
+            ((response #:status-code 200
+                       #:headers ((content-type (regexp #"application/json")))
+                       #:json output)
+             output)))))
 
     ;;A constructor of context%
     (define (make-context input)
@@ -179,7 +200,7 @@
            (model (unbox model))
            (system (unbox system))
            (input input)
-           (send/recv sd/rv)
+           (send/recv send/recv)
            (prob displayln)))
 
     ;;The main loop
