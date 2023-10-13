@@ -179,6 +179,7 @@
                                        #f)))))
                         null))
              (jar (new list-cookie-jar%))
+             (timeouts (make-timeout-config #:lease 60 #:connect 60 #:request 60))
              (session (make-session #:proxies (list proxy) #:cookie-jar jar))
              (url "https://api.openai.com/v1/chat/completions"))
         (plumber-add-flush! (current-plumber) (lambda (_) (session-close! session)))
@@ -186,6 +187,7 @@
           (match
            (session-request
             session url
+            #:timeouts timeouts
             #:auth (bearer-auth (unbox token))
             #:method 'post
             #:data (json-payload input))
