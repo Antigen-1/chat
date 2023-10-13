@@ -37,7 +37,7 @@
 ;;Context
 (define context%
   (class object%
-    (init-field model system input send recv prob)
+    (init-field model system input send/recv prob)
 
     (super-new)
 
@@ -72,11 +72,11 @@
                               (lambda (history request)
                                 ;;Send and receive
                                 (define result
-                                  (send
+                                  (send/recv
                                    (jsexpr->bytes
                                     (hasheq 'model model
                                             'messages (reverse (cons (make-message "user" request) history))))))
-                                (define response (bytes->jsexpr (recv result)))
+                                (define response (bytes->jsexpr result))
                                 ;;Log token usage
                                 (call-with-values (lambda () (retrieve-usage response))
                                                   (lambda (t p c)
@@ -110,24 +110,20 @@
         (model "gpt-3.5-turbo")
         (system "You are a helpful assistant.")
         (input (in-list (list "Hello.")))
-        (send
-         (let-values (((in out) (make-pipe)))
-           (lambda (bstr)
-             (write-json
+        (send/recv
+         (lambda (bstr)
+           (jsexpr->bytes
+            (hasheq
+             'usage
+             (hasheq 'total_tokens 6
+                     'prompt_tokens 6
+                     'completion_tokens 0)
+             'choices
+             (list
               (hasheq
-               'usage
-               (hasheq 'total_tokens 6
-                       'prompt_tokens 6
-                       'completion_tokens 0)
-               'choices
-               (list
-                (hasheq
-                 'message
-                 (hasheq 'content
-                         (hash-ref (bytes->jsexpr bstr) 'messages)))))
-              out)
-             in)))
-        (recv (lambda (port) (jsexpr->bytes (read-json port))))
+               'message
+               (hasheq 'content
+                       (hash-ref (bytes->jsexpr bstr) 'messages))))))))
         (prob (lambda (response)
                 (check-match response
                              (list (hash-table ('role "system") ('content "You are a helpful assistant."))
@@ -144,7 +140,7 @@
   ;; does not run when this file is required by another module. Documentation:
   ;; http://docs.racket-lang.org/guide/Module_Syntax.html#%28part._main-and-test%29
 
-  (require racket/cmdline racket/port racket/contract raco/command-name net/url)
+  (require racket/cmdline racket/port racket/contract raco/command-name http123)
   (define model (box "gpt-3.5-turbo"))
   (define system (box "You are a helpful assistant."))
   (define interact? (box #t))
@@ -165,22 +161,17 @@
     ;;Check
     (cond ((not (unbox token)) (raise (make-exn:fail:user "You must provide your openai token." (current-continuation-marks)))))
 
-    ;;Constants
-    (define url (string->url "https://api.openai.com/v1/chat/completions"))
-    (define headers (list "Content-Type: application/json"
-                          (format "Authorization: Bearer ~a" (unbox token))))
-
     ;;Functions for HTTPS communication
-    (define-values (sd rv)
-      (values (lambda (bstr)
-                (post-impure-port url bstr headers))
-              (let ((raise-network (lambda (msg) (raise (make-exn:fail:network msg (current-continuation-marks))))))
-                (lambda (port)
-                  (let ((header (regexp-match #rx"^HTTP/1\\.[01] ([0-9]+)" (purify-port port))))
-                    (cond ((not header) (raise-network "Mis-formatted reply is met."))
-                          ((not (string=? (cadr header) "200"))
-                           (raise-network (format "HTTP status code: ~a." (cadr header))))
-                          (else (port->bytes port))))))))
+    (define sd/rv
+      (let* ((client (http-client #:add-header
+                                  `((#"content-type" #"application/json")
+                                    (#"authorization"
+                                     ,(string->bytes/utf-8 (format "Bearer ~a" (unbox token)))))
+                                  #:add-content-handlers
+                                  `((application/json ,port->bytes))))
+             (url "https://api.openai.com/v1/chat/completions"))
+        (lambda (bstr)
+          (send client handle (request 'POST url null bstr)))))
 
     ;;A constructor of context%
     (define (make-context input)
@@ -188,8 +179,7 @@
            (model (unbox model))
            (system (unbox system))
            (input input)
-           (send sd)
-           (recv rv)
+           (send/recv sd/rv)
            (prob displayln)))
 
     ;;The main loop
