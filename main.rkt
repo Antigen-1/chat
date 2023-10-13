@@ -145,24 +145,27 @@
   (define interact? (box #t))
   (define token (box #f))
   (define module (box #f))
+  (define timeouts (box 60))
   (command-line
     #:program (short-program+command-name)
     #:once-each
     [("-m" "--model") m "Specify the model." (set-box! model m)]
     [("-s" "--system") s "Specify the system prompt." (set-box! system s)]
     [("-n" "--no-interact") "Turn off the interactive mode." (set-box! interact? #f)]
-    [("-t" "--token") s "Sepcify the openai token." (set-box! token s)]
+    [("-t" "--token") s "Specify the openai token." (set-box! token s)]
     [("-p" "--module-path") p "Specify the module path to be imported dynamically." (set-box! module (string->path p))]
+    [("-T" "--timeouts") t "Configure the timeouts." (set-box! timeouts (string->number t))]
     #:ps
     "The interactive mode is automatically turned off when `-p` or `--module-path` is supplied."
     "The module to be dynamically imported must provide `input-stream` which is a stream of strings."
     #:args ()
     ;;Check
     (cond ((not (unbox token)) (raise (make-exn:fail:user "You must provide your openai token." (current-continuation-marks)))))
+    (cond ((or (not (unbox timeouts)) (not (real? (unbox timeouts))) (not (positive? (unbox timeouts)))) (raise (make-exn:fail:user "Timeouts must be positive numbers." (current-continuation-marks)))))
 
     ;;A procedure used for HTTPS communication
     ;;Support proxies and cookie storage
-    (define send/recv
+    (define-values (session send/recv)
       (let* ((proxy-server (proxy-server-for "https"))
              (proxy (if proxy-server
                         (match proxy-server
@@ -179,22 +182,23 @@
                                        #f)))))
                         null))
              (jar (new list-cookie-jar%))
-             (timeouts (make-timeout-config #:lease 60 #:connect 60 #:request 60))
+             (timeout-config (make-timeout-config #:lease (unbox timeouts) #:connect (unbox timeouts) #:request (unbox timeouts)))
              (session (make-session #:proxies (list proxy) #:cookie-jar jar))
              (url "https://api.openai.com/v1/chat/completions"))
-        (plumber-add-flush! (current-plumber) (lambda (_) (session-close! session)))
-        (lambda (input)
-          (match
-           (session-request
-            session url
-            #:timeouts timeouts
-            #:auth (bearer-auth (unbox token))
-            #:method 'post
-            #:data (json-payload input))
-            ((response #:status-code 200
-                       #:headers ((content-type (regexp #"application/json")))
-                       #:json output)
-             output)))))
+        (values
+         session
+         (lambda (input)
+           (match
+               (session-request
+                session url
+                #:timeouts timeout-config
+                #:auth (bearer-auth (unbox token))
+                #:method 'post
+                #:data (json-payload input))
+             ((response #:status-code 200
+                        #:headers ((content-type (regexp #"application/json")))
+                        #:json output)
+              output))))))
 
     ;;A constructor of context%
     (define (make-context input)
@@ -218,4 +222,7 @@
                (sequence->stream
                 (in-port (lambda (in)
                            (cond ((unbox interact?) (display "> ")))
-                           (read-line in)))))))))))
+                           (read-line in)))))))))
+
+    ;;Finalization
+    (session-close! session)))
