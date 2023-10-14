@@ -167,7 +167,7 @@
 
     ;;A procedure used for HTTPS communication
     ;;Support proxies and cookie storage
-    (define-values (session send/recv)
+    (define send/recv
       (let* ((proxy-server (proxy-server-for "https"))
              (proxy (if proxy-server
                         (match proxy-server
@@ -186,21 +186,30 @@
              (jar (new list-cookie-jar%))
              (timeout-config (make-timeout-config #:request (unbox timeout)))
              (session (make-session #:proxies (list proxy) #:cookie-jar jar))
-             (url "https://api.openai.com/v1/chat/completions"))
-        (values
-         session
-         (lambda (input)
-           (match
-               (session-request
-                session url
-                #:timeouts timeout-config
-                #:auth (bearer-auth (unbox token))
-                #:method 'post
-                #:data (json-payload input))
-             ((response #:status-code 200
-                        #:headers ((content-type (regexp #"application/json")))
-                        #:json output)
-              output))))))
+             (url "https://api.openai.com/v1/chat/completions")
+             (call/timeout
+              (lambda (proc)
+                (with-handlers ((exn:fail:http-easy:timeout?
+                                 (lambda (exn) (raise (make-exn:fail:network
+                                                       (format "~a: timed out"
+                                                               (exn:fail:http-easy:timeout-kind exn))
+                                                       (current-continuation-marks))))))
+                  (proc)))))
+        (plumber-add-flush! (current-plumber) (lambda (_) (session-close! session)))
+        (lambda (input)
+          (call/timeout
+           (lambda ()
+             (match
+                 (session-request
+                  session url
+                  #:timeouts timeout-config
+                  #:auth (bearer-auth (unbox token))
+                  #:method 'post
+                  #:data (json-payload input))
+               ((response #:status-code 200
+                          #:headers ((content-type (regexp #"application/json")))
+                          #:json output)
+                output)))))))
 
     ;;A constructor of context%
     (define (make-context input)
@@ -223,7 +232,4 @@
              (sequence->stream
               (in-port (lambda (in)
                          (cond ((unbox interact?) (display "> ")))
-                         (read-line in))))))))
-
-    ;;Finalization
-    (session-close! session)))
+                         (read-line in))))))))))
