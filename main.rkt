@@ -139,13 +139,14 @@
 
   (require racket/cmdline racket/contract racket/match
            raco/command-name
-           net/http-easy net/url net/cookies)
+           net/http-easy net/url)
   (define model (box "gpt-3.5-turbo"))
   (define system (box "You are a helpful assistant."))
   (define interact? (box #t))
   (define token (box #f))
   (define module (box #f))
-  (define timeout (box 60))
+  (define request-timeout (box 600))
+  (define idle-timeout (box 600))
   (command-line
     #:program (short-program+command-name)
     #:once-each
@@ -154,7 +155,8 @@
     [("-n" "--no-interact") "Turn off the interactive mode." (set-box! interact? #f)]
     [("-t" "--token") s "Specify the openai token." (set-box! token s)]
     [("-p" "--module-path") p "Specify the module path to be imported dynamically." (set-box! module (string->path p))]
-    [("-T" "--request-timeout") t "Specify how long to wait on a request." (set-box! timeout (string->number t))]
+    [("-r" "--request-timeout") r "Specify how long to wait on a request." (set-box! request-timeout (string->number r))]
+    [("-i" "--idle-timeout") i "Specify how long to wait on an idle connection." (set-box! idle-timeout (string->number i))]
     #:ps
     "The interactive mode is automatically turned off when `-p` or `--module-path` is supplied."
     "The module to be dynamically imported must provide `input-stream` which is a stream of strings."
@@ -162,11 +164,12 @@
     ;;Check
     (cond ((not (unbox token))
            (raise (make-exn:fail:user "You must provide your openai token." (current-continuation-marks)))))
-    (cond ((or (not (unbox timeout)) (not (real? (unbox timeout))) (not (positive? (unbox timeout))))
-           (raise (make-exn:fail:user "Timeouts must be positive numbers." (current-continuation-marks)))))
+    (for ((timeout (in-list (list request-timeout idle-timeout))))
+      (cond ((or (not (unbox timeout)) (not (real? (unbox timeout))) (not (positive? (unbox timeout))))
+             (raise (make-exn:fail:user "Timeouts must be positive numbers." (current-continuation-marks))))))
 
     ;;A procedure used for HTTPS communication
-    ;;Support proxies and cookie storage
+    ;;Support HTTPS proxies
     (define send/recv
       (let* ((proxy-server (proxy-server-for "https"))
              (proxy (if proxy-server
@@ -183,10 +186,10 @@
                                        null
                                        #f)))))
                         null))
-             (jar (new list-cookie-jar%))
-             (timeout-config (make-timeout-config #:request (unbox timeout)))
-             (session (make-session #:proxies (list proxy) #:cookie-jar jar))
-             (url "https://api.openai.com/v1/chat/completions")
+             (timeout-config (make-timeout-config #:request (unbox request-timeout)))
+             (pool-config (make-pool-config #:idle-timeout (unbox idle-timeout)))
+             (url (string->url "https://api.openai.com/v1/chat/completions"))
+             (session (make-session #:proxies (list proxy) #:pool-config pool-config))
              (call/timeout
               (lambda (proc)
                 (with-handlers ((exn:fail:http-easy:timeout?
@@ -199,17 +202,18 @@
         (lambda (input)
           (call/timeout
            (lambda ()
-             (match
-                 (session-request
-                  session url
-                  #:timeouts timeout-config
-                  #:auth (bearer-auth (unbox token))
-                  #:method 'post
-                  #:data (json-payload input))
-               ((response #:status-code 200
-                          #:headers ((content-type (regexp #"application/json")))
-                          #:json output)
-                output)))))))
+             (parameterize ((current-session session))
+               (match
+                   (post
+                    url
+                    #:close? #t
+                    #:timeouts timeout-config
+                    #:auth (bearer-auth (unbox token))
+                    #:data (json-payload input))
+                 ((response #:status-code 200
+                            #:headers ((content-type (regexp #"application/json")))
+                            #:json output)
+                  output))))))))
 
     ;;A constructor of context%
     (define (make-context input)
