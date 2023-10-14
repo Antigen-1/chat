@@ -225,7 +225,10 @@
                  ((response #:status-code 200
                             #:headers ((content-type (regexp #"application/json")))
                             #:json output)
-                  output))))))))
+                  output)
+                 ((response #:status-code code #:headers ((content-type type)) #:body body)
+                  (raise (make-exn:fail:user (format "code: ~a\ncontent-type: ~a\nbody: ~s" code type body)
+                                             (current-continuation-marks)))))))))))
 
     ;;A constructor of context%
     (define (make-context input)
