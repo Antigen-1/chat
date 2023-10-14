@@ -137,7 +137,7 @@
   ;; does not run when this file is required by another module. Documentation:
   ;; http://docs.racket-lang.org/guide/Module_Syntax.html#%28part._main-and-test%29
 
-  (require racket/cmdline racket/contract racket/match
+  (require racket/cmdline racket/contract racket/match racket/list
            raco/command-name
            net/http-easy net/url)
   (define model (box "gpt-3.5-turbo"))
@@ -169,27 +169,37 @@
              (raise (make-exn:fail:user "Timeouts must be positive numbers." (current-continuation-marks))))))
 
     ;;A procedure used for HTTPS communication
-    ;;Support HTTPS proxies
+    ;;Currently HTTP(S) proxies are supported
     (define send/recv
-      (let* ((proxy-server (proxy-server-for "https"))
-             (proxy (if proxy-server
-                        (match proxy-server
-                          ((list scheme host port)
-                           (make-https-proxy
-                            (url->string
-                             (make-url scheme
-                                       #f
-                                       host
-                                       port
-                                       #f
-                                       null
-                                       null
-                                       #f)))))
-                        null))
-             (timeout-config (make-timeout-config #:request (unbox request-timeout)))
+      (let* (;;Proxies
+             ;;Records: (listof (list/c <scheme> (or/c #f <server>) <maker>))
+             ;;Server: any/c
+             ;;Maker: (-> <server> proxy?)
+             (format-http*-proxy-server
+              (lambda (server)
+                (match server
+                  ((list scheme host port)
+                   (url->string
+                    (make-url scheme
+                              #f
+                              host
+                              port
+                              #f
+                              null
+                              null
+                              #f))))))
+             (proxy-records (list (list "http" (proxy-server-for "http") (compose1 make-http-proxy format-http*-proxy-server))
+                                  (list "https" (proxy-server-for "https") (compose1 make-https-proxy format-http*-proxy-server))))
+             (proxies
+              (filter-map
+               (lambda (record)
+                 (and (cadr record) ((caddr record) (cadr record))))
+               proxy-records))
+             ;;Pool and session configuration
              (pool-config (make-pool-config #:idle-timeout (unbox idle-timeout)))
-             (url (string->url "https://api.openai.com/v1/chat/completions"))
-             (session (make-session #:proxies (list proxy) #:pool-config pool-config))
+             (session (make-session #:proxies proxies #:pool-config pool-config))
+             ;;Timeout configuration
+             (timeout-config (make-timeout-config #:request (unbox request-timeout)))
              (call/timeout
               (lambda (proc)
                 (with-handlers ((exn:fail:http-easy:timeout?
@@ -197,7 +207,9 @@
                                                        (format "~a: timed out"
                                                                (exn:fail:http-easy:timeout-kind exn))
                                                        (current-continuation-marks))))))
-                  (proc)))))
+                  (proc))))
+             ;;The url constant
+             (url (string->url "https://api.openai.com/v1/chat/completions")))
         (plumber-add-flush! (current-plumber) (lambda (_) (session-close! session)))
         (lambda (input)
           (call/timeout
