@@ -192,6 +192,7 @@
                (session-request
                 session url
                 #:timeouts timeout-config
+                #:max-attempts 1
                 #:auth (bearer-auth (unbox token))
                 #:method 'post
                 #:data (json-payload input))
