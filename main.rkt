@@ -68,15 +68,15 @@
       (log-message prompt-token-logger 'info (add-prefix 'PromptTokens) (format "~a" p))
       (log-message completion-token-logger 'info (add-prefix 'CompletionTokens) (format "~a" c)))
 
-    ;;A signal-processing system represented as an infinite stream
     (define (make-history-stream input)
+      ;;A loop represented as a stream
       (letrec ((history-stream
                 (stream-cons #:eager
                              (list (list 0 0 0) (make-message "system" system))
                              (stream-map*
                               (lambda (history request)
                                 (define new-message (make-message "user" request))
-                                ;;Send and receive
+                                ;;Send and receive data
                                 (define response
                                   (send/recv
                                    (hasheq 'model model
@@ -158,7 +158,7 @@
     #:once-each
     [("-m" "--model") m "Specify the model." (set-box! model m)]
     [("-s" "--system") s "Specify the system prompt." (set-box! system s)]
-    [("-n" "--no-interact") "Turn off the interactive mode." (set-box! interact? #f)]
+    [("-I" "--no-interact") "Turn off the interactive mode." (set-box! interact? #f)]
     [("-t" "--token") s "Specify the openai token." (set-box! token s)]
     [("-p" "--module-path") p "Specify the module path to be imported dynamically." (set-box! module (string->path p))]
     [("-r" "--request-timeout") r "Specify how long to wait on a request." (set-box! request-timeout (string->number r))]
