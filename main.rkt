@@ -26,11 +26,10 @@
 ;; Code here
 
 (require racket/class racket/stream)
-(provide token-logger total-token-logger prompt-token-logger completion-token-logger)
+(provide token-logger prompt-token-logger completion-token-logger)
 
 ;;Loggers
 (define token-logger (make-logger #f (current-logger)))
-(define total-token-logger (make-logger #f token-logger))
 (define prompt-token-logger (make-logger #f token-logger))
 (define completion-token-logger (make-logger #f token-logger))
 
@@ -62,12 +61,18 @@
           empty-stream
           (stream-cons #:eager (apply proc (map stream-first ss))
                        (apply stream-map* proc (map stream-rest ss)))))
+    (define (log-tokens t p c #:prefix (prefix ""))
+      (define (add-prefix sym) (string->symbol (string-append prefix (symbol->string sym))))
+
+      (log-message token-logger 'info (add-prefix 'Tokens) (format "~a" t))
+      (log-message prompt-token-logger 'info (add-prefix 'PromptTokens) (format "~a" p))
+      (log-message completion-token-logger 'info (add-prefix 'CompletionTokens) (format "~a" c)))
 
     ;;A signal-processing system represented as an infinite stream
     (define (make-history-stream input)
       (letrec ((history-stream
                 (stream-cons #:eager
-                             (list 0 (make-message "system" system))
+                             (list (list 0 0 0) (make-message "system" system))
                              (stream-map*
                               (lambda (history request)
                                 (define new-message (make-message "user" request))
@@ -81,17 +86,16 @@
                                              ((total prompt completion) (retrieve-usage response)))
 
                                   (prob content)
-                                  (log-message total-token-logger 'info 'TotalTokens (format "~a" total))
-                                  (log-message prompt-token-logger 'info 'PromptTokens (format "~a" prompt))
-                                  (log-message completion-token-logger 'info 'CompletionTokens (format "~a" completion))
+                                  (log-tokens total prompt completion)
 
-                                  (cons (+ total (car history)) (cons (make-message "assistant" content) (cons new-message (cdr history))))))
+                                  (cons (map + (list total prompt completion) (car history))
+                                        (cons (make-message "assistant" content) (cons new-message (cdr history))))))
                               history-stream
                               input))))
         history-stream))
 
-    ;;Log the total amount of all tokens
-    (log-message token-logger 'info 'AllTokens (format "~a" (caar (reverse (stream->list (make-history-stream input))))))))
+    ;;Log the total amount of tokens
+    (keyword-apply log-tokens '(#:prefix) '("All") (caar (reverse (stream->list (make-history-stream input)))))))
 
 (module+ test
   ;; Any code in this `test` submodule runs when this file is run using DrRacket
@@ -126,10 +130,12 @@
                                    (hash-table ('role "user") ('content "Hello."))))))))
 
   (define (log-message=? v1 v2) (check-equal? (vector-copy v1 0 2) v2))
-  (log-message=? (sync log-receiver) (vector 'info "TotalTokens: 6"))
+  (log-message=? (sync log-receiver) (vector 'info "Tokens: 6"))
   (log-message=? (sync log-receiver) (vector 'info "PromptTokens: 6"))
   (log-message=? (sync log-receiver) (vector 'info "CompletionTokens: 0"))
-  (log-message=? (sync log-receiver) (vector 'info "AllTokens: 6")))
+  (log-message=? (sync log-receiver) (vector 'info "AllTokens: 6"))
+  (log-message=? (sync log-receiver) (vector 'info "AllPromptTokens: 6"))
+  (log-message=? (sync log-receiver) (vector 'info "AllCompletionTokens: 0")))
 
 (module+ main
   ;; (Optional) main submodule. Put code here if you need it to be executed when
