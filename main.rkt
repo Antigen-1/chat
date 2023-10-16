@@ -153,7 +153,7 @@
   ;; does not run when this file is required by another module. Documentation:
   ;; http://docs.racket-lang.org/guide/Module_Syntax.html#%28part._main-and-test%29
 
-  (require racket/cmdline racket/match racket/list racket/class racket/stream
+  (require racket/cmdline racket/match racket/list racket/class racket/stream racket/promise
            (submod "..") "private/stream.rkt"
            raco/command-name
            net/http-easy net/url)
@@ -253,17 +253,15 @@
 
     ;;Make input streams with rate limits
     (define (make-limited-stream input limit)
-      (letrec ((least-interval (/ 60 limit))
+      (letrec ((delayed-start (delay (current-inexact-milliseconds)))
+               (least-interval (/ 60000.0 limit))
                (record-stream
                 (stream-cons
-                 #:eager
-                 (list (current-seconds) #f) ;;Adding the interval is unnecessary in the beginning
+                 #:eager (list 0 #f) ;;Adding the interval is unnecessary in the beginning
                  (stream-map*
                   (lambda (record string)
-                    (let* ((now (current-seconds))
-                           (next (+ (max now (car record)) least-interval)))
-                      (cond ((< now (car record)) (sleep (- (car record) now))))
-                      (list next string)))
+                    (sync (handle-evt (alarm-evt (+ (force delayed-start) (* least-interval (car record))))
+                                      (lambda (_) (list (add1 (car record)) string)))))
                   record-stream
                   input))))
         (stream-map cadr (stream-filter values record-stream))))
