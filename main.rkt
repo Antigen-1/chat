@@ -22,7 +22,7 @@
 
 ;; Code here
 
-(require racket/class racket/stream racket/contract json)
+(require racket/class racket/stream racket/contract json "private/stream.rkt")
 (provide token-logger prompt-token-logger completion-token-logger
          (contract-out (context% (class/c (init-field (model string?)
                                                       (system string?)
@@ -58,14 +58,6 @@
         (values (hash-ref table 'total_tokens)
                 (hash-ref table 'prompt_tokens)
                 (hash-ref table 'completion_tokens))))
-    (define (stream-map* proc . ss)
-      (if (ormap stream-empty? ss)
-          empty-stream
-          (stream-cons #:eager (apply proc (map stream-first ss))
-                       (apply stream-map* proc (map stream-rest ss)))))
-    (define (stream-last s)
-      (cond ((stream-empty? (stream-rest s)) (stream-first s))
-            (else (stream-last (stream-rest s)))))
     (define (log-tokens t p c #:prefix (prefix ""))
       (define (add-prefix sym) (string->symbol (string-append prefix (symbol->string sym))))
 
@@ -161,8 +153,8 @@
   ;; does not run when this file is required by another module. Documentation:
   ;; http://docs.racket-lang.org/guide/Module_Syntax.html#%28part._main-and-test%29
 
-  (require racket/cmdline racket/match racket/list racket/class
-           (submod "..")
+  (require racket/cmdline racket/match racket/list racket/class racket/stream
+           (submod "..") "private/stream.rkt"
            raco/command-name
            net/http-easy net/url)
   (define model (box "gpt-3.5-turbo"))
@@ -172,6 +164,7 @@
   (define module (box #f))
   (define request-timeout (box 600))
   (define idle-timeout (box 600))
+  (define rate-limit (box 6))
   (command-line
     #:program (short-program+command-name)
     #:once-each
@@ -182,9 +175,10 @@
     [("-p" "--module-path") p "Specify the module path to be imported dynamically." (set-box! module (string->path p))]
     [("-r" "--request-timeout") r "Specify how long to wait on a request." (set-box! request-timeout (string->number r))]
     [("-i" "--idle-timeout") i "Specify how long to wait on an idle connection." (set-box! idle-timeout (string->number i))]
+    [("-l" "--rate-limit") l "Specify the number of times the client can access the server within a minute." (set-box! rate-limit (string->number l))]
     #:ps
     "The interactive mode is automatically turned off when `-p` or `--module-path` is supplied."
-    "The module to be dynamically imported must provide `input-stream` which is a stream of strings."
+    "The module to be dynamically imported must provide `input-stream` which is a stream of strings, `#f`s or lists of strings."
     #:args ()
     ;;Check
     (cond ((not (unbox token))
@@ -192,6 +186,8 @@
     (for ((timeout (in-list (list request-timeout idle-timeout))))
       (cond ((or (not (unbox timeout)) (not (real? (unbox timeout))) (not (positive? (unbox timeout))))
              (raise (make-exn:fail:user "Timeouts must be positive numbers." (current-continuation-marks))))))
+    (cond ((or (not (unbox rate-limit)) (not (real? (unbox rate-limit))) (not (positive? (unbox rate-limit))))
+           (raise (make-exn:fail:user "Rate limits must be positive numbers." (current-continuation-marks)))))
 
     ;;A procedure used for HTTPS communication
     ;;Currently HTTP(S) proxies are supported
@@ -255,12 +251,29 @@
                   (raise (make-exn:fail:user (format "code: ~a\ncontent-type: ~a\nbody: ~s" code type body)
                                              (current-continuation-marks)))))))))))
 
+    ;;Make input streams with rate limits
+    (define (make-limited-stream input limit)
+      (letrec ((least-interval (/ 60 limit))
+               (record-stream
+                (stream-cons
+                 #:eager
+                 (list (current-seconds) #f) ;;Adding the interval is unnecessary in the beginning
+                 (stream-map*
+                  (lambda (record string)
+                    (let* ((now (current-seconds))
+                           (next (+ (max now (car record)) least-interval)))
+                      (cond ((< now (car record)) (sleep (- (car record) now))))
+                      (list next string)))
+                  record-stream
+                  input))))
+        (stream-map cadr (stream-filter values record-stream))))
+
     ;;A constructor of context%
     (define (make-context input)
       (new context%
            (model (unbox model))
            (system (unbox system))
-           (input input)
+           (input (make-limited-stream input (unbox rate-limit)))
            (send/recv send/recv)
            (prob displayln)))
 
