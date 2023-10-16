@@ -259,12 +259,14 @@
                 (stream-cons
                  #:eager (list 0 #f) ;;Adding the interval is unnecessary in the beginning
                  (stream-map*
-                  (lambda (record string)
-                    (sync (handle-evt (alarm-evt (+ (force delayed-start) (* least-interval (car record))))
-                                      (lambda (_) (list (add1 (car record)) string)))))
+                  (lambda (r i)
+                    (cond ((or (string? i) (list? i))
+                           (sync (handle-evt (alarm-evt (+ (force delayed-start) (* least-interval (car r))))
+                                             (lambda (_) (list (add1 (car r)) i)))))
+                          (else (list (car r) i))))
                   record-stream
                   input))))
-        (stream-map cadr (stream-filter values record-stream))))
+        (stream-filter values (stream-map cadr record-stream))))
 
     ;;A constructor of context%
     (define (make-context input)
