@@ -1,8 +1,5 @@
 #lang racket/base
 
-(module+ test
-  (require rackunit))
-
 ;; Notice
 ;; To install (from within the package directory):
 ;;   $ raco pkg install
@@ -25,8 +22,13 @@
 
 ;; Code here
 
-(require racket/class racket/stream)
-(provide token-logger prompt-token-logger completion-token-logger)
+(require racket/class racket/stream racket/contract json)
+(provide token-logger prompt-token-logger completion-token-logger
+         (contract-out (context% (class/c (init-field (model string?)
+                                                      (system string?)
+                                                      (input (stream/c (or/c 'reset string? (listof string?))))
+                                                      (send/recv (-> any/c jsexpr?))
+                                                      (prob (-> any/c any)))))))
 
 ;;Loggers
 (define token-logger (make-logger #f (current-logger)))
@@ -61,6 +63,9 @@
           empty-stream
           (stream-cons #:eager (apply proc (map stream-first ss))
                        (apply stream-map* proc (map stream-rest ss)))))
+    (define (stream-last s)
+      (cond ((stream-empty? (stream-rest s)) (stream-first s))
+            (else (stream-last (stream-rest s)))))
     (define (log-tokens t p c #:prefix (prefix ""))
       (define (add-prefix sym) (string->symbol (string-append prefix (symbol->string sym))))
 
@@ -68,41 +73,51 @@
       (log-message prompt-token-logger 'info (add-prefix 'PromptTokens) (format "~a" p))
       (log-message completion-token-logger 'info (add-prefix 'CompletionTokens) (format "~a" c)))
 
-    (define (make-history-stream input)
-      ;;A loop represented as a stream
-      (letrec ((history-stream
-                (stream-cons #:eager
-                             (list (list 0 0 0) (make-message "system" system))
-                             (stream-map*
-                              (lambda (history request)
-                                (define new-message (make-message "user" request))
-                                ;;Send and receive data
-                                (define response
-                                  (send/recv
-                                   (hasheq 'model model
-                                           'messages (reverse (cons new-message (cdr history))))))
-                                ;;Inform probes and loggers, and return updated history
-                                (let-values (((content) (retrieve-content response))
-                                             ((total prompt completion) (retrieve-usage response)))
+    ;;Handlers
+    (define (normal history requests)
+      (define new-messages (map (lambda (request) (make-message "user" request)) requests))
+      ;;Send and receive data
+      (define response
+        (send/recv
+         (hasheq 'model model
+                 'messages (reverse (append new-messages (cdr history))))))
+      ;;Inform probes and loggers, and return updated history
+      (let-values (((content) (retrieve-content response))
+                   ((total prompt completion) (retrieve-usage response)))
 
-                                  (prob content)
-                                  (log-tokens total prompt completion)
+        (prob content)
+        (log-tokens total prompt completion)
 
-                                  (cons (map + (list total prompt completion) (car history))
-                                        (cons (make-message "assistant" content) (cons new-message (cdr history))))))
-                              history-stream
-                              input))))
-        history-stream))
+        (cons (map + (list total prompt completion) (car history))
+              (cons (make-message "assistant" content) (append new-messages (cdr history))))))
+    (define (reset history _)
+      ;;Conversations are discarded while token usage is preserved
+      (list (car history) (make-message "system" system)))
+
+      (define (make-history-stream input)
+        ;;An accumulator represented as a stream
+        (letrec ((history-stream
+                  (stream-cons #:eager
+                               (list (list 0 0 0) (make-message "system" system))
+                               (stream-map*
+                                (lambda (history request)
+                                  ;;Dispatch in terms of the request
+                                  (cond ((list? request) (normal history request))
+                                        ((string? request) (normal history (list request)))
+                                        (else (reset history 'reset))))
+                                history-stream
+                                input))))
+          history-stream))
 
     ;;Log the total amount of tokens
-    (keyword-apply log-tokens '(#:prefix) '("All") (caar (reverse (stream->list (make-history-stream input)))))))
+    (keyword-apply log-tokens '(#:prefix) '("All") (car (stream-last (make-history-stream input))))))
 
-(module+ test
+(module* test racket/base
   ;; Any code in this `test` submodule runs when this file is run using DrRacket
   ;; or with `raco test`. The code here does not run when this file is
   ;; required by another module.
 
-  (require racket/vector)
+  (require rackunit racket/vector racket/class (submod ".."))
 
   (define log-receiver (make-log-receiver token-logger 'info))
 
@@ -110,7 +125,7 @@
    (new context%
         (model "gpt-3.5-turbo")
         (system "You are a helpful assistant.")
-        (input (in-list (list "Hello.")))
+        (input (in-list (list "Hello." 'reset '("Hello."))))
         (send/recv
          (lambda (js)
            (hasheq
@@ -133,17 +148,21 @@
   (log-message=? (sync log-receiver) (vector 'info "Tokens: 6"))
   (log-message=? (sync log-receiver) (vector 'info "PromptTokens: 6"))
   (log-message=? (sync log-receiver) (vector 'info "CompletionTokens: 0"))
-  (log-message=? (sync log-receiver) (vector 'info "AllTokens: 6"))
-  (log-message=? (sync log-receiver) (vector 'info "AllPromptTokens: 6"))
+  (log-message=? (sync log-receiver) (vector 'info "Tokens: 6"))
+  (log-message=? (sync log-receiver) (vector 'info "PromptTokens: 6"))
+  (log-message=? (sync log-receiver) (vector 'info "CompletionTokens: 0"))
+  (log-message=? (sync log-receiver) (vector 'info "AllTokens: 12"))
+  (log-message=? (sync log-receiver) (vector 'info "AllPromptTokens: 12"))
   (log-message=? (sync log-receiver) (vector 'info "AllCompletionTokens: 0")))
 
-(module+ main
+(module* main racket/base
   ;; (Optional) main submodule. Put code here if you need it to be executed when
   ;; this file is run using DrRacket or the `racket` executable.  The code here
   ;; does not run when this file is required by another module. Documentation:
   ;; http://docs.racket-lang.org/guide/Module_Syntax.html#%28part._main-and-test%29
 
-  (require racket/cmdline racket/contract racket/match racket/list
+  (require racket/cmdline racket/match racket/list racket/class
+           (submod "..")
            raco/command-name
            net/http-easy net/url)
   (define model (box "gpt-3.5-turbo"))
@@ -249,9 +268,7 @@
     ;;The interactive mode works only when `(unbox module)` returns false
     (void
      (make-context
-      (cond ((unbox module)
-             (define/contract input-stream (stream/c string?) (dynamic-require (unbox module) 'input-stream))
-             input-stream)
+      (cond ((unbox module) (dynamic-require (unbox module) 'input-stream))
             (else
              (cond ((unbox interact?) (displayln (format "I'm ~a. Can I help you?" (unbox model)))))
              (sequence->stream
