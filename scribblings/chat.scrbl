@@ -7,4 +7,4 @@
 
 @defmodule[chat]
 
-Package Description Here
+@include-section[(submod "../main.rkt" doc)]
