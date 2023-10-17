@@ -4,7 +4,7 @@
 @author[(author+email "张昊" "zhanghao at antigen dot top")]
 
 @section{Introduction}
-[这个应用实际上是针对@hyperlink["https://github.com/sarabander/sicp-pdf/raw/master/sicp.pdf"]{SICP}第三章“从函数式编程的视角看待时间”这个观点的一次实践。本文采用了@hyperlink["https://docs.racket-lang.org/hyper-literate/index.html"]{文学式编程}的风格，包含了此应用绝大多数源码。还有一小部分源码位于private目录下，是一些stream相关的实用函数，由于未加contract，因此本文档未涉及。]
+[这个应用实际上是针对@hyperlink["https://github.com/sarabander/sicp-pdf/raw/master/sicp.pdf"]{SICP}第三章“从函数式编程的视角看待时间”这个观点的一次实践。本文采用了@hyperlink["https://docs.racket-lang.org/scribble/lp.html"]{文学式编程}的风格，包含了此应用绝大多数源码。还有一小部分源码位于private目录下，是一些stream相关的实用函数，由于未加contract，因此本文档未涉及。]
 
 这个应用实现了基于chatGPT API的简单的文本补全，用户可以优雅的处理输入流、对话上下文和token使用量。
 
