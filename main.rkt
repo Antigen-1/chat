@@ -220,7 +220,7 @@
         [("-l" "--rate-limit") l "Specify the number of times the client can access the server within a minute." (set-box! rate-limit (string->number l))]
         #:ps
         "The interactive mode is automatically turned off when `-p` or `--module-path` is supplied."
-        "The module to be dynamically imported must provide `input-stream` which is a stream of strings, `#f`s or lists of strings."
+        "The module to be dynamically imported must provide `input-stream` which is a stream of strings, `'reset`s or lists of strings."
         #:args ()
         (code:comment "Checking")
         (cond ((not (unbox token))
