@@ -3,7 +3,7 @@
 @title{OpenAI ChatGPT Client}
 @author[(author+email "张昊" "zhanghao at antigen dot top")]
 
-@require[(for-label net/http-easy net/url racket raco/command-name "private/stream.rkt")]
+@require[(for-label net/http-easy net/url racket raco/command-name "private/stream.rkt" "private/error.rkt")]
 
 @section{Introduction}
 [这个应用实际上是针对@hyperlink["https://github.com/sarabander/sicp-pdf/raw/master/sicp.pdf"]{SICP}第三章“从函数式编程的视角看待时间”这个观点的一次实践。本文采用了@hyperlink["https://docs.racket-lang.org/scribble/lp.html"]{文学式编程}的风格，包含了此应用绝大多数源码。还有一小部分源码位于private目录下，是一些stream相关的实用函数，由于未加contract，因此本文档未涉及。]
@@ -17,20 +17,25 @@
 需要导入的模块如下。
 
 @CHUNK[<import>
-       (require racket/class racket/stream racket/contract json "private/stream.rkt")]
+       (require racket/class racket/stream racket/contract json "private/stream.rkt" "private/error.rkt")]
 
 接下来我们要绑定如下这些标识符。
 
 @CHUNK[<export>
-       (provide token-logger total-token-logger prompt-token-logger completion-token-logger
+       (provide token-logger total-token-logger prompt-token-logger completion-token-logger retry-logger
                 (contract-out (context% (class/c (init-field (model string?)
                                                              (system string?)
                                                              (input (stream/c (or/c 'reset string? (listof string?))))
-                                                             (send/recv (-> any/c jsexpr?))
-                                                             (prob (-> any/c any)))))))
+                                                             (send/recv (-> any/c any/c jsexpr?))
+                                                             (prob (-> any/c any))
+                                                             (retry-limit exact-nonnegative-integer?)))))
+                (struct-out exn:fail:chat)
+                (struct-out exn:fail:chat:retry-limit))
        ]
 
-导出这些@racket[logger]是为了让用户更方便地获取token的使用量。@racket[context%]是这里的核心，在这里我们用contract的方式规定了各个初始化字段的内容。
+导出这些@racket[logger]是为了让用户更方便地获取token的使用量。
+@racket[context%]是这里的核心，在这里我们用contract的方式规定了各个初始化字段的内容。
+此外还导出了一些新的异常以便用户作异常处理。
 
 @CHUNK[<loggers>
        (code:comment "其他logger的parent logger")
@@ -40,7 +45,9 @@
        (code:comment "提示的token数量")
        (define prompt-token-logger (make-logger #f token-logger))
        (code:comment "补全的token数量")
-       (define completion-token-logger (make-logger #f token-logger))]
+       (define completion-token-logger (make-logger #f token-logger))
+       (code:comment "重试原因")
+       (define retry-logger (make-logger #f (current-logger)))]
 
 @CHUNK[<utilities>
        (define (make-message role cont)
@@ -69,20 +76,25 @@
 
 @CHUNK[<handlers>
        (define (normal history requests)
-         (define new-messages (map (lambda (request) (make-message "user" request)) requests))
-         (code:comment "Send and receive data")
-         (define response
-           (send/recv
-            (hasheq 'model model
-                    'messages (reverse (append new-messages (cdr history))))))
-         (code:comment "Inform probes and loggers, and return updated history")
-         (let-values (((content) (retrieve-content response))
-                      ((total prompt completion) (retrieve-usage response)))
-           (prob content)
-           (log-tokens total prompt completion)
+         (let/cc cc
+           (define new-messages (map (lambda (request) (make-message "user" request)) requests))
+           (code:comment "Send and receive data")
+           (define response
+             (send/recv
+              (code:comment "Retry occurs only when send/recv wants to raise an exception")
+              (lambda ((msg #f))
+                (log-message retry-logger 'info 'Retry (cond (msg) (else "")))
+                (cc (fail msg)))
+              (hasheq 'model model
+                      'messages (reverse (append new-messages (cdr history))))))
+           (code:comment "Inform probes and loggers, and return updated history")
+           (let-values (((content) (retrieve-content response))
+                        ((total prompt completion) (retrieve-usage response)))
+             (prob content)
+             (log-tokens total prompt completion)
 
-           (cons (map + (list total prompt completion) (car history))
-                 (cons (make-message "assistant" content) (append new-messages (cdr history))))))
+             (cons (map + (list total prompt completion) (car history))
+                   (cons (make-message "assistant" content) (append new-messages (cdr history)))))))
        (define (reset history _)
          (code:comment "Conversations are discarded while token usage is preserved")
          (list (car history) (make-message "system" system)))]
@@ -109,8 +121,9 @@
          (letrec ((history-stream
                    (stream-cons #:eager
                                 (list (list 0 0 0) (make-message "system" system))
-                                (stream-map*
+                                (stream-map**
                                  dispatch
+                                 #:retry-limit retry-limit
                                  history-stream
                                  input))))
            history-stream))]
@@ -126,7 +139,7 @@
 
        (define context%
          (class object%
-           (init-field model system input send/recv prob)
+           (init-field model system input send/recv prob retry-limit)
 
            (super-new)
 
@@ -152,18 +165,25 @@
 
          (define log-receiver (make-log-receiver token-logger 'info))
 
+         (define tt (random 50 100))
+         (define pt (random 0 tt))
+         (define ct (- tt pt))
+         (define ss (make-string (random 0 100) #\a))
+         (define us (make-string (random 0 100) #\b))
+
          (void
           (new context%
                (model "gpt-3.5-turbo")
-               (system "You are a helpful assistant.")
-               (input (in-list (list "Hello." 'reset '("Hello."))))
+               (system ss)
+               (input (in-list (list us 'reset (list us))))
+               (retry-limit 0)
                (send/recv
-                (lambda (js)
+                (lambda (_ js)
                   (hasheq
                    'usage
-                   (hasheq 'total_tokens 6
-                           'prompt_tokens 6
-                           'completion_tokens 0)
+                   (hasheq 'total_tokens tt
+                           'prompt_tokens pt
+                           'completion_tokens ct)
                    'choices
                    (list
                     (hasheq
@@ -172,19 +192,20 @@
                              (hash-ref js 'messages)))))))
                (prob (lambda (response)
                        (check-match response
-                                    (list (hash-table ('role "system") ('content "You are a helpful assistant."))
-                                          (hash-table ('role "user") ('content "Hello."))))))))
+                                    (list (hash-table ('role "system") ('content ass))
+                                          (hash-table ('role "user") ('content aus)))
+                                    (and (string=? ss ass) (string=? us aus)))))))
 
          (define (log-message=? v1 v2) (check-equal? (vector-copy v1 0 2) v2))
-         (log-message=? (sync log-receiver) (vector 'info "Tokens: 6"))
-         (log-message=? (sync log-receiver) (vector 'info "PromptTokens: 6"))
-         (log-message=? (sync log-receiver) (vector 'info "CompletionTokens: 0"))
-         (log-message=? (sync log-receiver) (vector 'info "Tokens: 6"))
-         (log-message=? (sync log-receiver) (vector 'info "PromptTokens: 6"))
-         (log-message=? (sync log-receiver) (vector 'info "CompletionTokens: 0"))
-         (log-message=? (sync log-receiver) (vector 'info "AllTokens: 12"))
-         (log-message=? (sync log-receiver) (vector 'info "AllPromptTokens: 12"))
-         (log-message=? (sync log-receiver) (vector 'info "AllCompletionTokens: 0")))]
+         (log-message=? (sync log-receiver) (vector 'info (format "Tokens: ~a" tt)))
+         (log-message=? (sync log-receiver) (vector 'info (format "PromptTokens: ~a" pt)))
+         (log-message=? (sync log-receiver) (vector 'info (format "CompletionTokens: ~a" ct)))
+         (log-message=? (sync log-receiver) (vector 'info (format "Tokens: ~a" tt)))
+         (log-message=? (sync log-receiver) (vector 'info (format "PromptTokens: ~a" pt)))
+         (log-message=? (sync log-receiver) (vector 'info (format "CompletionTokens: ~a" ct)))
+         (log-message=? (sync log-receiver) (vector 'info (format "AllTokens: ~a" (* 2 tt))))
+         (log-message=? (sync log-receiver) (vector 'info (format "AllPromptTokens: ~a" (* 2 pt))))
+         (log-message=? (sync log-receiver) (vector 'info (format "AllCompletionTokens: ~a" (* 2 ct)))))]
 
 @section{Commandline}
 
@@ -208,7 +229,8 @@
        (define module (box #f))
        (define request-timeout (box 600))
        (define idle-timeout (box 600))
-       (define rate-limit (box 6))
+       (define rate-limit (box 2))
+       (define retry-limit (box 0))
        (command-line
         #:program (short-program+command-name)
         #:once-each
@@ -220,6 +242,7 @@
         [("-r" "--request-timeout") r "Specify how long to wait on a request." (set-box! request-timeout (string->number r))]
         [("-i" "--idle-timeout") i "Specify how long to wait on an idle connection." (set-box! idle-timeout (string->number i))]
         [("-l" "--rate-limit") l "Specify the number of times the client can access the server within a minute." (set-box! rate-limit (string->number l))]
+        [("-n" "--retry-limit") l "Specify the number of times the client can re-send a request." (set-box! retry-limit (string->number l))]
         #:ps
         "The interactive mode is automatically turned off when `-p` or `--module-path` is supplied."
         "The module to be dynamically imported must provide `input-stream` which is a stream of strings, `'reset`s or lists of strings."
@@ -231,7 +254,10 @@
           (cond ((or (not (unbox timeout)) (not (real? (unbox timeout))) (not (positive? (unbox timeout))))
                  (raise (make-exn:fail:user "Timeouts must be positive numbers." (current-continuation-marks))))))
         (cond ((or (not (unbox rate-limit)) (not (real? (unbox rate-limit))) (not (positive? (unbox rate-limit))))
-               (raise (make-exn:fail:user "Rate limits must be positive numbers." (current-continuation-marks))))))]
+               (raise (make-exn:fail:user "Rate limits must be positive numbers." (current-continuation-marks)))))
+        (cond ((or (not (unbox retry-limit)) (not (exact-nonnegative-integer? (unbox retry-limit))))
+               (raise (make-exn:fail:user "Retry limits must be exact nonnegative integers." (current-continuation-marks))))))
+       ]
 
 然后我们使用@hyperlink["https://docs.racket-lang.org/http-easy/index.html"]{http-easy}库绑定与服务器交互的相关函数。
 
@@ -268,19 +294,18 @@
                 (session (make-session #:proxies proxies #:pool-config pool-config))
                 (code:comment "Timeout configuration")
                 (timeout-config (make-timeout-config #:request (unbox request-timeout)))
-                (call/timeout
-                 (lambda (proc)
+                (call/handler
+                 (lambda (fail proc)
                    (with-handlers ((exn:fail:http-easy:timeout?
-                                    (lambda (exn) (raise (make-exn:fail:network
-                                                          (format "~a: timed out"
-                                                                  (exn:fail:http-easy:timeout-kind exn))
-                                                          (current-continuation-marks))))))
+                                    (lambda (exn) (fail (format "~a: timed out" (exn:fail:http-easy:timeout-kind exn)))))
+                                   (exn:fail:http-easy? (lambda (exn) (fail (exn-message exn)))))
                      (proc))))
                 (code:comment "The url constant")
                 (url (string->url "https://api.openai.com/v1/chat/completions")))
            (plumber-add-flush! (current-plumber) (lambda (_) (session-close! session)))
-           (lambda (input)
-             (call/timeout
+           (lambda (fail input)
+             (call/handler
+              fail
               (lambda ()
                 (parameterize ((current-session session))
                   (match
@@ -295,8 +320,7 @@
                                #:json output)
                      output)
                     ((response #:status-code code #:headers ((content-type type)) #:body body)
-                     (raise (make-exn:fail:user (format "code: ~a\ncontent-type: ~a\nbody: ~s" code type body)
-                                                (current-continuation-marks)))))))))))]
+                     (fail (format "code: ~a\ncontent-type: ~a\nbody: ~s" code type body))))))))))]
 
 接下来对输入流作速率限制。这里又使用了@racket[stream]，实际上限制的是每一次输入及其之前输入的平均速率。
 
@@ -323,6 +347,7 @@
          (new context%
               (model (unbox model))
               (system (unbox system))
+              (retry-limit (unbox retry-limit))
               (input (make-limited-stream input (unbox rate-limit)))
               (send/recv send/recv)
               (prob displayln)))]
@@ -376,3 +401,9 @@ Racket的文学式编程语言要求要有一个提纲把文档所有内容收�
        <test>
        <main>
        ]
+
+@section{日志}
+
+@itemlist[
+          @item{2023.12.2 添加了重试的功能，改进了异常处理。}
+          ]
