@@ -18,7 +18,7 @@
                    (format "make-retry: hit the limit~a"
                            (cond ((fail-message result)
                                   =>
-                                  (lambda (msg) (format "\nIts last attempt fails due to ~s\n" msg)))
+                                  (lambda (msg) (format "\nIts last attempt fails due to:~a\n" msg)))
                                  (else "")))
                    (current-continuation-marks))))
           (else result))))

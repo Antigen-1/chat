@@ -320,7 +320,7 @@
                                #:json output)
                      output)
                     ((response #:status-code code #:headers ((content-type type)) #:body body)
-                     (fail (format "code: ~a\ncontent-type: ~a\nbody: ~s" code type body))))))))))]
+                     (fail (format "\ncode: ~a\ncontent-type: ~a\nbody: ~s" code type body))))))))))]
 
 接下来对输入流作速率限制。这里又使用了@racket[stream]，实际上限制的是每一次输入及其之前输入的平均速率。
 
