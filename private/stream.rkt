@@ -22,6 +22,7 @@
                                  (else "")))
                    (current-continuation-marks))))
           (else result))))
+(define retry (Y make-retry))
 
 (define (stream-last s)
   (cond ((stream-empty? (stream-rest s)) (stream-first s))
@@ -29,9 +30,8 @@
 (define (stream-map* proc . ss)
   (if (ormap stream-empty? ss)
       empty-stream
-      (stream-cons (apply proc (map stream-first ss))
+      (stream-cons #:eager (apply proc (map stream-first ss))
                    (apply stream-map* proc (map stream-rest ss)))))
 (define (stream-map** proc #:retry-limit (limit 0) . ss)
-  (define rt (Y make-retry))
-  (define (np . as) (rt (lambda () (apply proc as)) limit))
+  (define (np . as) (retry (lambda () (apply proc as)) limit))
   (apply stream-map* np ss))

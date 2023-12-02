@@ -246,6 +246,7 @@
         #:ps
         "The interactive mode is automatically turned off when `-p` or `--module-path` is supplied."
         "The module to be dynamically imported must provide `input-stream` which is a stream of strings, `'reset`s or lists of strings."
+        "Besides, you simply cannot reset the context or input a list of strings when using the driver loop."
         #:args ()
         (code:comment "Checking")
         (cond ((not (unbox token))
@@ -331,7 +332,8 @@
                   (least-interval (/ 60000.0 limit))
                   (record-stream
                    (stream-cons
-                    #:eager (list 0 #f) (code:comment "Adding the interval is unnecessary in the beginning")
+                    (code:comment "Adding the interval is unnecessary in the beginning")
+                    #:eager (list 0 'reset)
                     (stream-map*
                      (lambda (r i)
                        (cond ((or (string? i) (list? i))
@@ -340,7 +342,7 @@
                              (else (list (car r) i))))
                      record-stream
                      input))))
-           (stream-filter values (stream-map cadr record-stream))))
+           (stream-map cadr record-stream)))
 
        (code:comment "A constructor of context%")
        (define (make-context input)
@@ -372,24 +374,24 @@
 
          (code:comment "The main loop")
          (code:comment "The interactive mode works only when `(unbox module)` returns false")
-         (void
-          (make-context
-           (cond ((unbox module) (dynamic-require (unbox module) 'input-stream))
-                 (else
-                  (cond ((unbox interact?) (displayln (format "I'm ~a. Can I help you?" (unbox model)))))
-                  (sequence->stream
-                   (in-port (lambda (in)
-                              (cond ((unbox interact?) (display "> ")))
-                              (read-line in)))))))))]
+         (with-handlers ((exn:break? void))
+           (void
+            (make-context
+             (cond ((unbox module) (dynamic-require (unbox module) 'input-stream))
+                   (else
+                    (cond ((unbox interact?) (displayln (format "I'm ~a. Can I help you?" (unbox model)))))
+                    (letrec ((read-requests (lambda (in)
+                                              (cond ((unbox interact?) (display "> ")))
+                                              (define line (read-line in))
+                                              (if (eof-object? line) empty-stream (stream-cons #:eager line (read-requests in))))))
+                      (read-requests (current-input-port)))))))))]
 
-需要注意的是这个命令行程序有一个设计缺陷，我暂时未找到优雅的解决方法。想要从程序中安全退出只有两种方式。
+想要从程序中安全退出有且只有两种方式。
 
 @itemlist[
-          @item{一是输入流结束}
-          @item{二是内部发生错误}
-          ]
-
-因此你是无法在https连接未断开时安全的中断的（即使使用Ctl-C）。
+          @item{Ctl-C中断}
+          @item{结束输入流}
+          ]。
 
 @section{Outline}
 
@@ -405,5 +407,5 @@ Racket的文学式编程语言要求要有一个提纲把文档所有内容收�
 @section{日志}
 
 @itemlist[
-          @item{2023.12.2 添加了重试的功能，改进了异常处理。}
+          @item{2023.12.2 添加了重试的功能，改进了异常处理和程序退出。}
           ]
