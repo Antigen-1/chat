@@ -17,7 +17,7 @@
 需要导入的模块如下。
 
 @CHUNK[<import>
-       (require racket/class racket/stream racket/contract json "private/stream.rkt" "private/error.rkt")]
+       (require racket/class racket/stream racket/contract json "private/stream.rkt" "private/error.rkt" "private/retry.rkt")]
 
 接下来我们要绑定如下这些标识符。
 
@@ -65,6 +65,9 @@
            (values (hash-ref table 'total_tokens)
                    (hash-ref table 'prompt_tokens)
                    (hash-ref table 'completion_tokens))))
+       (define (return-fail msg)
+         (define (report str) (log-message retry-logger 'info 'Retry str))
+         (fail msg report))
        (define (log-tokens t p c #:prefix (prefix ""))
          (define (add-prefix sym) (string->symbol (string-append prefix (symbol->string sym))))
 
@@ -82,9 +85,7 @@
            (define response
              (send/recv
               (code:comment "Retry occurs only when send/recv wants to raise an exception")
-              (lambda ((msg #f))
-                (log-message retry-logger 'info 'Retry (cond (msg) (else "")))
-                (cc (fail msg)))
+              (lambda ((msg #f)) (cc (return-fail msg)))
               (hasheq 'model model
                       'messages (reverse (append new-messages (cdr history))))))
            (code:comment "Inform probes and loggers, and return updated history")
@@ -121,9 +122,8 @@
          (letrec ((history-stream
                    (stream-cons #:eager
                                 (list (list 0 0 0) (make-message "system" system))
-                                (stream-map**
-                                 dispatch
-                                 #:retry-limit retry-limit
+                                (stream-map*
+                                 (lambda (hs rq) (retry (lambda () (dispatch hs rq)) retry-limit))
                                  history-stream
                                  input))))
            history-stream))]
@@ -374,24 +374,18 @@
 
          (code:comment "The main loop")
          (code:comment "The interactive mode works only when `(unbox module)` returns false")
-         (with-handlers ((exn:break? void))
-           (void
-            (make-context
-             (cond ((unbox module) (dynamic-require (unbox module) 'input-stream))
-                   (else
-                    (cond ((unbox interact?) (displayln (format "I'm ~a. Can I help you?" (unbox model)))))
-                    (letrec ((read-requests (lambda (in)
-                                              (cond ((unbox interact?) (display "> ")))
-                                              (define line (read-line in))
-                                              (if (eof-object? line) empty-stream (stream-cons #:eager line (read-requests in))))))
-                      (read-requests (current-input-port)))))))))]
+         (void
+          (make-context
+           (cond ((unbox module) (dynamic-require (unbox module) 'input-stream))
+                 (else
+                  (cond ((unbox interact?) (displayln (format "I'm ~a. Can I help you?" (unbox model)))))
+                  (letrec ((read-requests (lambda (in)
+                                            (cond ((unbox interact?) (display "> ")))
+                                            (define line (read-line in))
+                                            (if (eof-object? line) empty-stream (stream-cons #:eager line (read-requests in))))))
+                    (read-requests (current-input-port))))))))]
 
-想要从程序中安全退出有且只有两种方式。
-
-@itemlist[
-          @item{Ctl-C中断}
-          @item{结束输入流}
-          ]。
+想要从程序中安全退出有且只有一种方式，即终止输入流。
 
 @section{Outline}
 
@@ -407,5 +401,5 @@ Racket的文学式编程语言要求要有一个提纲把文档所有内容收�
 @section{日志}
 
 @itemlist[
-          @item{2023.12.2 添加了重试的功能，改进了异常处理和程序退出。}
+          @item{2023.12 添加了重试的功能，改进了异常处理和程序退出。}
           ]
