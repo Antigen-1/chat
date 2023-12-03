@@ -73,7 +73,7 @@
          (log-message prompt-token-logger 'info (add-prefix 'PromptTokens) (format "~a" p))
          (log-message completion-token-logger 'info (add-prefix 'CompletionTokens) (format "~a" c)))]
 
-封装、解析数据包，报告token使用的实用函数。
+封装、解析数据包，报告token使用和异常的实用函数。
 
 @CHUNK[<handlers>
        (define (normal history requests)
@@ -151,7 +151,7 @@
 
 @section{Test}
 
-可以参考下面这个测试用例使用@racket[logger]。
+可以参考下面这个测试用例使用@racket[logger]。你也可以根据它理解整个程序的工作流程。
 
 @CHUNK[<test>
        (module* test racket/base
@@ -161,7 +161,7 @@
 
          (require rackunit racket/vector racket/class (submod ".."))
 
-         (define log-receiver (make-log-receiver token-logger 'info))
+         (define log-receiver (make-log-receiver (current-logger) 'info))
 
          (define tt (random 50 100))
          (define pt (random 0 tt))
@@ -169,14 +169,17 @@
          (define ss (make-string (random 0 100) #\a))
          (define us (make-string (random 0 100) #\b))
 
+         (define rb (box #f))
+
          (void
           (new context%
                (model "gpt-3.5-turbo")
                (system ss)
                (input (in-list (list us 'reset (list us))))
-               (retry-limit 0)
+               (retry-limit 1)
                (send/recv
-                (lambda (_ js)
+                (lambda (fl js)
+                  (cond ((not (unbox rb)) (set-box! rb #t) (fl)))
                   (hasheq
                    'usage
                    (hasheq 'total_tokens tt
@@ -195,6 +198,7 @@
                                     (and (string=? ss ass) (string=? us aus)))))))
 
          (define (log-message=? v1 v2) (check-equal? (vector-copy v1 0 2) v2))
+         (log-message=? (sync log-receiver) (vector 'info "Retry: unknown"))
          (log-message=? (sync log-receiver) (vector 'info (format "Tokens: ~a" tt)))
          (log-message=? (sync log-receiver) (vector 'info (format "PromptTokens: ~a" pt)))
          (log-message=? (sync log-receiver) (vector 'info (format "CompletionTokens: ~a" ct)))
@@ -383,7 +387,7 @@
                                             (if (eof-object? line) empty-stream (stream-cons #:eager line (read-requests in))))))
                     (read-requests (current-input-port))))))))]
 
-想要从程序中安全退出有且只有一种方式，即终止输入流。
+从这里可以发现，想要从程序中安全退出有且只有一种方式，即终止输入流。
 
 @section{Outline}
 
@@ -396,7 +400,7 @@ Racket的文学式编程语言要求要有一个提纲把文档所有内容收�
        <main>
        ]
 
-@section{日志}
+@section{Release Notes}
 
 @itemlist[
           @item{2023.12 添加了重试的功能，改进了异常处理和程序退出。}
