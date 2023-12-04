@@ -4,7 +4,7 @@
 (define build-deps '("racket-doc" "rackunit-lib" "net-doc"))
 (define scribblings '(("main.rkt" ())))
 (define pkg-desc "Description Here")
-(define version "0.0")
+(define version "0.0.1")
 (define pkg-authors '(hin))
 (define license '(Apache-2.0 OR MIT))
 (define raco-commands '(("chat" (submod chat main) "Chat with chatgpt" #f)))
