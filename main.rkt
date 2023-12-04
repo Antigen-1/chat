@@ -4,7 +4,9 @@
 @author[(author+email "张昊" "zhanghao at antigen dot top")]
 
 @section{Introduction}
-[这个应用实际上是针对@hyperlink["https://github.com/sarabander/sicp-pdf/raw/master/sicp.pdf"]{SICP}第三章“从函数式编程的视角看待时间”这个观点的一次实践。本文采用了@hyperlink["https://docs.racket-lang.org/scribble/lp.html"]{文学式编程}的风格，包含了此应用绝大多数源码。还有一小部分源码位于private目录下，是一些stream相关的实用函数，由于未加contract，因此本文档未涉及。]
+[这个应用实际上是针对@hyperlink["https://mitp-content-server.mit.edu/books/content/sectbyfn/books_pres_0/6515/sicp.zip/index.html"]{SICP}
+第三章“从函数式编程的视角看待时间”这个观点的一次实践。本文采用了@hyperlink["https://docs.racket-lang.org/scribble/lp.html"]{文学式编程}的风格，
+包含了此应用绝大多数源码。还有一小部分源码位于private目录下，由于未加contract，因此本文档未涉及。]
 
 这个应用实现了基于chatGPT API的简单的文本补全，用户可以优雅的处理输入流、对话上下文和token使用量。
 
@@ -89,7 +91,7 @@
            (code:comment "Inform probes and loggers, and return updated history")
            (let-values (((content) (retrieve-content response))
                         ((total prompt completion) (retrieve-usage response)))
-             (prob content)
+             (probe content)
              (log-tokens total prompt completion)
 
              (cons (map + (list total prompt completion) (car history))
@@ -137,7 +139,7 @@
 
        (define context%
          (class object%
-           (init-field model system input send/recv prob retry-limit)
+           (init-field model system input send/recv probe retry-limit)
 
            (super-new)
 
@@ -191,11 +193,11 @@
                      'message
                      (hasheq 'content
                              (hash-ref js 'messages)))))))
-               (prob (lambda (response)
-                       (check-match response
-                                    (list (hash-table ('role "system") ('content ass))
-                                          (hash-table ('role "user") ('content aus)))
-                                    (and (string=? ss ass) (string=? us aus)))))))
+               (probe (lambda (response)
+                        (check-match response
+                                     (list (hash-table ('role "system") ('content ass))
+                                           (hash-table ('role "user") ('content aus)))
+                                     (and (string=? ss ass) (string=? us aus)))))))
 
          (define (log-message=? v1 v2) (check-equal? (vector-copy v1 0 2) v2))
          (log-message=? (sync log-receiver) (vector 'info "Retry: unknown"))
@@ -208,6 +210,37 @@
          (log-message=? (sync log-receiver) (vector 'info (format "AllTokens: ~a" (* 2 tt))))
          (log-message=? (sync log-receiver) (vector 'info (format "AllPromptTokens: ~a" (* 2 pt))))
          (log-message=? (sync log-receiver) (vector 'info (format "AllCompletionTokens: ~a" (* 2 ct)))))]
+
+@section{Configuration}
+
+这个部分主要是配置程序运行的环境，包括很多参数，可以通过这些源代码了解哪些参数必须提供、哪些参数有默认值以及各个参数应该设置为什么值。
+
+之所以单独设置一个模块，一方面是为了提供除命令行参数以外另一种配置方式，使配置更灵活（例如@racket[module]和@racket[probe]）；另一方面则是为了便于检查。
+
+@CHUNK[<configuration>
+       (module config racket/base
+         (require racket/contract)
+         (provide (contract-out
+                   (model (box/c string?))
+                   (system (box/c string?))
+                   (interact? (box/c boolean?))
+                   (token (box/c (or/c #f string?)))
+                   (module (box/c (or/c #f module-path?)))
+                   (probe (box/c (-> string? any)))
+                   (request-timeout (box/c (and/c real? positive?)))
+                   (idle-timeout (box/c (and/c real? positive?)))
+                   (rate-limit (box/c (and/c real? positive?)))
+                   (retry-limit (box/c exact-nonnegative-integer?))))
+         (define model (box "gpt-3.5-turbo"))
+         (define system (box "You are a helpful assistant."))
+         (define interact? (box #t))
+         (define token (box #f))
+         (define module (box #f))
+         (define probe (box displayln))
+         (define request-timeout (box 600))
+         (define idle-timeout (box 600))
+         (define rate-limit (box 2))
+         (define retry-limit (box 2)))]
 
 @section{Commandline}
 
@@ -223,16 +256,9 @@
                (list "None"       @racket[(current-input-port)] @racket[(current-output-port)] "Y")
                (list "-p <mod>"   "input-stream"                @racket[(current-output-port)] "N"))]
 
+必需的参数这里也进行了检查。
+
 @CHUNK[<commandline>
-       (define model (box "gpt-3.5-turbo"))
-       (define system (box "You are a helpful assistant."))
-       (define interact? (box #t))
-       (define token (box #f))
-       (define module (box #f))
-       (define request-timeout (box 600))
-       (define idle-timeout (box 600))
-       (define rate-limit (box 2))
-       (define retry-limit (box 0))
        (command-line
         #:program (short-program+command-name)
         #:once-each
@@ -246,20 +272,13 @@
         [("-l" "--rate-limit") l "Specify the number of times the client can access the server within a minute." (set-box! rate-limit (string->number l))]
         [("-n" "--retry-limit") l "Specify the number of times the client can re-send a request." (set-box! retry-limit (string->number l))]
         #:ps
-        "The interactive mode is automatically turned off when `-p` or `--module-path` is supplied."
-        "The module to be dynamically imported must provide `input-stream` which is a stream of strings, `'reset`s or lists of strings."
-        "Besides, you simply cannot reset the context or input a list of strings when using the driver loop."
+        "1. The interactive mode is automatically turned off when `-p` or `--module-path` is supplied."
+        "2. The module to be dynamically imported must provide `input-stream` which is a stream of strings, `'reset`s or lists of strings."
+        "3. You simply cannot reset the context or input a list of strings when using the driver loop."
         #:args ()
-        (code:comment "Checking")
-        (cond ((not (unbox token))
-               (raise (make-exn:fail:user "You must provide your openai token." (current-continuation-marks)))))
-        (for ((timeout (in-list (list request-timeout idle-timeout))))
-          (cond ((or (not (unbox timeout)) (not (real? (unbox timeout))) (not (positive? (unbox timeout))))
-                 (raise (make-exn:fail:user "Timeouts must be positive numbers." (current-continuation-marks))))))
-        (cond ((or (not (unbox rate-limit)) (not (real? (unbox rate-limit))) (not (positive? (unbox rate-limit))))
-               (raise (make-exn:fail:user "Rate limits must be positive numbers." (current-continuation-marks)))))
-        (cond ((or (not (unbox retry-limit)) (not (exact-nonnegative-integer? (unbox retry-limit))))
-               (raise (make-exn:fail:user "Retry limits must be exact nonnegative integers." (current-continuation-marks))))))
+        (code:comment "Additional checks")
+        (cond ((not (unbox token)) (raise (make-exn:fail:user "You must provide your openai token." (current-continuation-marks)))))
+        )
        ]
 
 然后我们使用@hyperlink["https://docs.racket-lang.org/http-easy/index.html"]{http-easy}库绑定与服务器交互的相关函数。
@@ -344,17 +363,21 @@
                              (else (list (car r) i))))
                      record-stream
                      input))))
-           (stream-map cadr record-stream)))
+           (stream-map cadr record-stream)))]
 
-       (code:comment "A constructor of context%")
-       (define (make-context input)
-         (new context%
-              (model (unbox model))
-              (system (unbox system))
-              (retry-limit (unbox retry-limit))
-              (input (make-limited-stream input (unbox rate-limit)))
-              (send/recv send/recv)
-              (prob displayln)))]
+driver loop在这里直接用输入流表示，如前所述，一种是通过模块导入，一种是从标准输入读取。
+
+@CHUNK[<input>
+       (define input-stream
+         (cond ((unbox module) (dynamic-require (unbox module) 'input-stream))
+               (else
+                (code:comment "The interactive mode works only when `(unbox module)` returns false")
+                (cond ((unbox interact?) (displayln (format "I'm ~a. Can I help you?" (unbox model)))))
+                (letrec ((read-requests (lambda (in)
+                                          (cond ((unbox interact?) (display "> ")))
+                                          (define line (read-line in))
+                                          (if (eof-object? line) empty-stream (stream-cons #:eager line (read-requests in))))))
+                  (read-requests (current-input-port))))))]
 
 最后让我们把main模块组装好吧！
 
@@ -366,26 +389,23 @@
          (code:comment "http://docs.racket-lang.org/guide/Module_Syntax.html#%28part._main-and-test%29")
 
          (require racket/cmdline racket/match racket/list racket/class racket/stream racket/promise
-                (submod "..") "private/stream.rkt"
+                (submod "..") (submod ".." config) "private/stream.rkt"
                 raco/command-name
                 net/http-easy net/url)
 
          <commandline>
          <communication>
          <limit>
+         <input>
 
-         (code:comment "The main loop")
-         (code:comment "The interactive mode works only when `(unbox module)` returns false")
          (void
-          (make-context
-           (cond ((unbox module) (dynamic-require (unbox module) 'input-stream))
-                 (else
-                  (cond ((unbox interact?) (displayln (format "I'm ~a. Can I help you?" (unbox model)))))
-                  (letrec ((read-requests (lambda (in)
-                                            (cond ((unbox interact?) (display "> ")))
-                                            (define line (read-line in))
-                                            (if (eof-object? line) empty-stream (stream-cons #:eager line (read-requests in))))))
-                    (read-requests (current-input-port))))))))]
+          (new context%
+               (model (unbox model))
+               (system (unbox system))
+               (retry-limit (unbox retry-limit))
+               (input (make-limited-stream input-stream (unbox rate-limit)))
+               (send/recv send/recv)
+               (probe (unbox probe)))))]
 
 从这里可以发现，想要从程序中安全退出有且只有一种方式，即终止输入流。
 
@@ -397,6 +417,7 @@ Racket的文学式编程语言要求要有一个提纲把文档所有内容收�
        <*>
        <context>
        <test>
+       <configuration>
        <main>
        ]
 
