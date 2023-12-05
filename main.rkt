@@ -17,7 +17,7 @@
 需要导入的模块如下。
 
 @CHUNK[<import>
-       (require racket/class racket/stream racket/contract json "private/stream.rkt" "private/error.rkt" "private/retry.rkt")]
+       (require racket/base racket/class racket/stream racket/contract json "private/stream.rkt" "private/error.rkt" "private/retry.rkt")]
 
 接下来我们要绑定如下这些标识符。
 
@@ -215,12 +215,13 @@
 
 这个部分主要是配置程序运行的环境，包括很多参数，可以通过这些源代码了解哪些参数必须提供、哪些参数有默认值以及各个参数应该设置为什么值。
 
-之所以单独设置一个模块，一方面是为了提供除命令行参数以外另一种配置方式，使配置更灵活（例如@racket[module]和@racket[probe]）；另一方面则是为了便于检查。
+之所以单独设置一个模块，一方面是为了提供除命令行参数以外另一种配置方式，使配置更灵活（例如@racket[extra-proxies]、@racket[module]和@racket[probe]）；另一方面则是为了便于检查。
 
 @CHUNK[<configuration>
        (module config racket/base
-         (require racket/contract)
+         (require racket/contract net/http-easy)
          (provide (contract-out
+                   (extra-proxies (box/c (listof proxy?)))
                    (model (box/c string?))
                    (system (box/c string?))
                    (interact? (box/c boolean?))
@@ -231,6 +232,7 @@
                    (idle-timeout (box/c (and/c real? positive?)))
                    (rate-limit (box/c (and/c real? positive?)))
                    (retry-limit (box/c exact-nonnegative-integer?))))
+         (define extra-proxies (box null))
          (define model (box "gpt-3.5-turbo"))
          (define system (box "You are a helpful assistant."))
          (define interact? (box #t))
@@ -251,10 +253,10 @@
 @tabular[#:style 'boxed
          #:column-properties '(left right)
          #:row-properties '(bottom-border ())
-         (list (list @bold{flags} @bold{input}                  @bold{output}                  @bold{interactive?})
-               (list "-I"         @racket[(current-input-port)] @racket[(current-output-port)] "N")
-               (list "None"       @racket[(current-input-port)] @racket[(current-output-port)] "Y")
-               (list "-p <mod>"   "input-stream"                @racket[(current-output-port)] "N"))]
+         (list (list @bold{flags} @bold{input}                  @bold{interactive?})
+               (list "-I"         @racket[(current-input-port)] "N")
+               (list "None"       @racket[(current-input-port)] "Y")
+               (list "-p <mod>"   "input-stream"                "N"))]
 
 必需的参数这里也进行了检查。
 
@@ -274,7 +276,7 @@
         #:ps
         "1. The interactive mode is automatically turned off when `-p` or `--module-path` is supplied."
         "2. The module to be dynamically imported must provide `input-stream` which is a stream of strings, `'reset`s or lists of strings."
-        "3. You simply cannot reset the context or input a list of strings when using the driver loop."
+        "3. You can only send one line at a time when running the driver loop in the interactive mode."
         #:args ()
         (code:comment "Additional checks")
         (cond ((not (unbox token)) (raise (make-exn:fail:user "You must provide your openai token." (current-continuation-marks)))))
@@ -307,10 +309,11 @@
                 (proxy-records (list (list "http" (proxy-server-for "http") (compose1 make-http-proxy format-http*-proxy-server))
                                      (list "https" (proxy-server-for "https") (compose1 make-https-proxy format-http*-proxy-server))))
                 (proxies
-                 (filter-map
-                  (lambda (record)
-                    (and (cadr record) ((caddr record) (cadr record))))
-                  proxy-records))
+                 (append (unbox extra-proxies)
+                         (filter-map
+                          (lambda (record)
+                            (and (cadr record) ((caddr record) (cadr record))))
+                          proxy-records)))
                 (code:comment "Pool and session configuration")
                 (pool-config (make-pool-config #:idle-timeout (unbox idle-timeout)))
                 (session (make-session #:proxies proxies #:pool-config pool-config))
