@@ -260,6 +260,15 @@
 
 必需的参数这里也进行了检查。
 
+在这里对比一下@racket[module]和@racket[patch]：
+
+@tabular[#:style 'boxed
+         #:column-properties '(left right)
+         #:row-properties '(bottom-border ())
+         (list (list @bold{类型} @bold{作用} @bold{要求})
+               (list "module"   "提供输入流" "必须provide一个input-stream作为输入流")
+               (list "patch"    "任意用途"   "无要求，只要是个racket模块即可"))]
+
 @CHUNK[<commandline>
        (command-line
         #:program (short-program+command-name)
@@ -268,7 +277,8 @@
         [("-s" "--system") s "Specify the system prompt." (set-box! system s)]
         [("-I" "--no-interact") "Turn off the interactive mode." (set-box! interact? #f)]
         [("-t" "--token") s "Specify the openai token." (set-box! token s)]
-        [("-p" "--module-path") p "Specify the module path to be imported dynamically." (set-box! module (string->path p))]
+        [("-p" "--module") p "Specify the module to be imported dynamically." (set-box! module (string->path p))]
+        [("-c" "--patch") p "Specify the patch to be executed dynamically." (dynamic-require p #f)]
         [("-r" "--request-timeout") r "Specify how long to wait on a request." (set-box! request-timeout (string->number r))]
         [("-i" "--idle-timeout") i "Specify how long to wait on an idle connection." (set-box! idle-timeout (string->number i))]
         [("-l" "--rate-limit") l "Specify the number of times the client can access the server within a minute." (set-box! rate-limit (string->number l))]
@@ -276,7 +286,8 @@
         #:ps
         "1. The interactive mode is automatically turned off when `-p` or `--module-path` is supplied."
         "2. The module to be dynamically imported must provide `input-stream` which is a stream of strings, `'reset`s or lists of strings."
-        "3. You can only send one line at a time when running the driver loop in the interactive mode."
+        "3. The patch to be dynamically executed is an arbitrary racket module and you can configure the program in this file."
+        "4. You can only send one line at a time when running the driver loop in the interactive mode."
         #:args ()
         (code:comment "Additional checks")
         (cond ((not (unbox token)) (raise (make-exn:fail:user "You must provide your openai token." (current-continuation-marks)))))
