@@ -258,16 +258,20 @@
                (list "None"       @racket[(current-input-port)] "Y")
                (list "-p <mod>"   "input-stream"                "N"))]
 
-必需的参数这里也进行了检查。
-
 在这里对比一下@racket[module]和@racket[patch]：
 
 @tabular[#:style 'boxed
          #:column-properties '(left right)
          #:row-properties '(bottom-border ())
-         (list (list @bold{类型} @bold{作用} @bold{要求})
-               (list "module"   "提供输入流" "必须provide一个input-stream作为输入流")
-               (list "patch"    "任意用途"   "无要求，只要是个racket模块即可"))]
+         (list (list @bold{类型} @bold{作用} @bold{要求}                          @bold{加载方式})
+               (list "module"   "提供输入流" "必须provide一个input-stream作为输入流" "命令行设置或直接设置参数")
+               (list "patch"    "任意用途"   "无要求，只要是个racket模块即可"         "只能通过命令行设置"))]
+
+关于加载的过程，见@racket[dynamic-require]。
+
+必需的参数这里也进行了检查。
+@racket[patch]在检查之前执行，因此无法脱离检查。
+而@racket[module]在检查后导入，因此在下面构建输入流时，需使用@racket[stream-lazy]，需要使用输入流时再导入模块，这样@racket[module]当中设置的参数就无效了。
 
 @CHUNK[<commandline>
        (command-line
@@ -383,7 +387,9 @@ driver loop在这里直接用输入流表示，如前所述，一种是通过模
 
 @CHUNK[<input>
        (define input-stream
-         (cond ((unbox module) (dynamic-require (unbox module) 'input-stream))
+         (cond ((unbox module)
+                (code:comment "The module is loaded when the stream is needed.")
+                (stream-lazy (dynamic-require (unbox module) 'input-stream)))
                (else
                 (code:comment "The interactive mode works only when `(unbox module)` returns false")
                 (cond ((unbox interact?) (displayln (format "I'm ~a. Can I help you?" (unbox model)))))
