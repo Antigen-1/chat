@@ -123,7 +123,7 @@
                    (stream-cons #:eager
                                 (list (list 0 0 0) (make-message "system" system))
                                 (stream-map*
-                                 (lambda (hs rq) (retry (lambda () (dispatch hs rq)) retry-limit))
+                                 (lambda (hs rq) ((retry retry-limit) (lambda () (dispatch hs rq))))
                                  history-stream
                                  input))))
            history-stream))]

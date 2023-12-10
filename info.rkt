@@ -1,7 +1,7 @@
 #lang info
 (define collection "chat")
 (define deps '("base" "scribble-lib" "http-easy-lib"))
-(define build-deps '("racket-doc" "rackunit-lib" "net-doc"))
+(define build-deps '("racket-doc" "rackunit-lib" "net-doc" "git://github.com/Antigen-1/hasket.git"))
 (define scribblings '(("main.rkt" ())))
 (define pkg-desc "Description Here")
 (define version "0.0.1")
