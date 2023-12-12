@@ -67,7 +67,7 @@
                    (hash-ref table 'completion_tokens))))
        (define (return-fail msg)
          (define (report str) (log-message retry-logger 'info 'Retry str))
-         (fail msg report))
+         (Left msg report))
        (define (log-tokens t p c #:prefix (prefix ""))
          (define (add-prefix sym) (string->symbol (string-append prefix (symbol->string sym))))
 
@@ -94,11 +94,11 @@
              (probe content)
              (log-tokens total prompt completion)
 
-             (cons (map + (list total prompt completion) (car history))
-                   (cons (make-message "assistant" content) (append new-messages (cdr history)))))))
+             (Right (cons (map + (list total prompt completion) (car history))
+                          (cons (make-message "assistant" content) (append new-messages (cdr history))))))))
        (define (reset history _)
          (code:comment "Conversations are discarded while token usage is preserved")
-         (list (car history) (make-message "system" system)))]
+         (Right (list (car history) (make-message "system" system))))]
 
 在这里定义两种事件。
 
