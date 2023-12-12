@@ -23,8 +23,8 @@
   (lambda/curry/match
    #:name make-retry
    ((retry n try)
-    (>>>
-     #f
+    (pipeline
+     (Right #f)
      ($
       (lambda/curry/match
        #:name retry-limit-checker
@@ -36,10 +36,15 @@
                                   (format "Its last attempt fails due to:~a\n" value))
                    (current-continuation-marks)))
             (Right #f))))
-      (lambda (_) (Right ((retry n) try))))
+      (lambda (_) ((retry n) try)))
      (lambda (_) (try))))))
 
 ;; functions
 (define retry (Yv make-retry))
-(define retry/raise ((lambda/curry/match #:name retry/raise (((errorR (at value _))) (raise value)) ((v) v))
-                     . retry))
+(define retry/raise
+  (lambda/curry/match
+   #:name retry/raise
+   ((n try)
+    (>>> #f
+         ($ (lambda/curry/match #:name retry-raiser (((errorR (at value _))) (raise value))))
+         (lambda (_) ((retry n) try))))))
