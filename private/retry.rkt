@@ -1,5 +1,5 @@
 #lang hasket
-(require "error.rkt")
+(require racket/port racket/string "error.rkt")
 (provide (rename-out (report-failure Left)
                      (retry/raise retry))
          Right)
@@ -17,6 +17,17 @@
   (log str)
   (Left str))
 
+;; Utilities
+;; Only the linefeed character is allowed to be used
+(define (align-lines s)
+  (call-with-input-string
+   s
+   (lambda (in)
+     (string-join
+      (for/list ((l (in-lines in)))
+        (format "\t~a" l))
+      "\n"))))
+
 ;; Try for at most n+1 times
 ;; Retry for at most n times
 (define make-retry
@@ -31,8 +42,8 @@
         (if (<= n 0)
             (Left (exn:fail:chat:retry-limit
                    (string-append "make-retry: hit the limit\n"
-                                  (format "position: ~a\n" position)
-                                  (format "Its last attempt fails due to:~a\n" value))
+                                  (format "Depth: ~a\n" (length position))
+                                  (format "Its last attempt fails due to:\n~a" (align-lines value)))
                    (current-continuation-marks)))
             (Right #f))))
       ((retry n) try))

@@ -156,12 +156,17 @@
 可以参考下面这个测试用例使用@racket[logger]。你也可以根据它理解整个程序的工作流程。
 
 @CHUNK[<test>
-       (module* test racket/base
+       (module* test hasket
          (code:comment "Any code in this `test` submodule runs when this file is run using DrRacket")
          (code:comment "or with `raco test`. The code here does not run when this file is")
          (code:comment "required by another module.")
 
          (require rackunit racket/vector racket/class (submod ".."))
+
+         (check-exn (lambda/curry/match #:name checker
+                                        (((exn:fail:chat:retry-limit msg _)) (string=? msg "make-retry: hit the limit\nDepth: 1\nIts last attempt fails due to:\n\tunknown"))
+                                        ((_) #f))
+                    (lambda () (new context% (model "") (system "") (input (in-list (list ""))) (retry-limit 0) (send/recv (lambda (fl _) (fl))) (probe void))))
 
          (define log-receiver (make-log-receiver (current-logger) 'info))
 
@@ -360,7 +365,7 @@
                                #:json output)
                      output)
                     ((response #:status-code code #:headers ((content-type type)) #:body body)
-                     (fail (format "\ncode: ~a\ncontent-type: ~a\nbody: ~s" code type body))))))))))]
+                     (fail (format "code: ~a\ncontent-type: ~a\nbody: ~s" code type body))))))))))]
 
 接下来对输入流作速率限制。这里又使用了@racket[stream]，实际上限制的是每一次输入及其之前输入的平均速率。
 
