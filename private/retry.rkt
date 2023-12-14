@@ -1,21 +1,13 @@
 #lang hasket
 (require racket/port racket/string "error.rkt")
-(provide (rename-out (report-failure Left)
-                     (retry/raise retry))
+(provide (rename-out (retry/raise retry))
+         Left
          Right)
 
 ;; Yv combinator
 (define (Yv t)
   (define make-maker (lambda/curry/match #:name make-maker ((m k x) (k (lambda (y) (m m k y)) x))))
   (make-maker make-maker t))
-
-;; The log function is called each time fail structure is created
-;; The value field is always a string
-(define (report-failure (msg #f) (log void))
-  (define (message->string msg) (if msg msg "unknown"))
-  (define str (message->string msg))
-  (log str)
-  (Left str))
 
 ;; Utilities
 ;; Only the linefeed character is allowed to be used
@@ -46,7 +38,7 @@
                                   (format "Its last attempt fails due to:\n~a" (align-lines value)))
                    (current-continuation-marks)))
             (Right #f))))
-      ((retry n) try))
+      ((retry (sub1 n)) try))
      (lambda (_) (try))))))
 
 ;; functions

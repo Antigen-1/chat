@@ -67,7 +67,11 @@
                    (hash-ref table 'completion_tokens))))
        (define (return-fail msg)
          (define (report str) (log-message retry-logger 'info 'Retry str))
-         (Left msg report))
+         (define (message->string msg) (if msg msg "unknown"))
+         (define str (message->string msg))
+         (report str)
+         ;; The value field is always a string
+         (Left str))
        (define (log-tokens t p c #:prefix (prefix ""))
          (define (add-prefix sym) (string->symbol (string-append prefix (symbol->string sym))))
 
