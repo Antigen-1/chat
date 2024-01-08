@@ -70,7 +70,7 @@
          (define (message->string msg) (if msg msg "unknown"))
          (define str (message->string msg))
          (report str)
-         ;; The value field is always a string
+         (code:comment "The value field is always a string")
          (Left str))
        (define (log-tokens t p c #:prefix (prefix ""))
          (define (add-prefix sym) (string->symbol (string-append prefix (symbol->string sym))))
@@ -300,7 +300,7 @@
         "1. The interactive mode is automatically turned off when `-p` or `--module-path` is supplied."
         "2. The module to be dynamically imported must provide `input-stream` which is a stream of strings, `'reset`s or lists of strings."
         "3. The patch to be dynamically executed is an arbitrary racket module and you can configure the program in this file."
-        "4. You can only send one line at a time when running the driver loop in the interactive mode."
+        "4. You can use commas to input commands and blocks when running the driver loop in the interactive mode."
         #:args ()
         (code:comment "Additional checks")
         (cond ((not (unbox token)) (raise (make-exn:fail:user "You must provide your openai token." (current-continuation-marks)))))
@@ -395,6 +395,10 @@
 driver loop在这里直接用输入流表示，如前所述，一种是通过模块导入，一种是从标准输入读取。
 
 @CHUNK[<input>
+       (define (handle-line line)
+         (match line
+           ((regexp #rx"^,(.*)$" (list _ datum-string)) (read (open-input-string datum-string)))
+           (_ line)))
        (define input-stream
          (cond ((unbox module)
                 (code:comment "The module is loaded when the stream is needed.")
@@ -404,7 +408,7 @@ driver loop在这里直接用输入流表示，如前所述，一种是通过模
                 (cond ((unbox interact?) (displayln (format "I'm ~a. Can I help you?" (unbox model)))))
                 (letrec ((read-requests (lambda (in)
                                           (cond ((unbox interact?) (display "> ")))
-                                          (define line (read-line in))
+                                          (define line (handle-line (read-line in)))
                                           (if (eof-object? line) empty-stream (stream-cons #:eager line (read-requests in))))))
                   (read-requests (current-input-port))))))]
 
@@ -454,4 +458,5 @@ Racket的文学式编程语言要求要有一个提纲把文档所有内容收�
 
 @itemlist[
           @item{2023.12 添加了重试的功能，改进了配置、异常处理和程序退出。}
+          @item{2024.01 改良了交互模式。}
           ]
