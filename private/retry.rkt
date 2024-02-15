@@ -1,5 +1,5 @@
 #lang hasket
-(require racket/port racket/string "error.rkt")
+(require hasket/unsafe racket/port racket/string "error.rkt")
 (provide (rename-out (retry/raise retry))
          Left
          Right)
