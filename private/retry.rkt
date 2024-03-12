@@ -20,6 +20,19 @@
         (format "\t~a" l))
       "\n"))))
 
+;; Structures
+(struct raised (str dep))
+(struct info (dep))
+
+;; Data abstraction
+(define (init-info)
+  (info 0))
+(define update-info
+  (lambda/curry/match
+   #:name info-updater
+   (((info dep))
+    (info (add1 dep)))))
+
 ;; Try for at most n+1 times
 ;; Retry for at most n times
 (define make-retry
@@ -27,19 +40,30 @@
    #:name make-retry
    ((retry n try)
     (>>>/steps
+     ($ (lambda/curry/match
+         #:name return
+         (((errorR (at value _))) (Right value))))
      ($
       (lambda/curry/match
        #:name retry-limit-checker
-       (((errorR (at value position)))
-        (if (<= n 0)
-            (Left (exn:fail:chat:retry-limit
-                   (string-append "make-retry: hit the limit\n"
-                                  (format "Depth: ~a\n" (length position))
-                                  (format "Its last attempt fails due to:\n~a" (align-lines value)))
-                   (current-continuation-marks)))
-            (Right #f))))
-      ((retry (sub1 n)) try))
-     (lambda (_) (try))))))
+       (((errorR (at (raised str (and i (info dep))) _)))
+        (if (= n dep)
+            (raise (exn:fail:chat:retry-limit
+                    (string-append "make-retry: hit the limit\n"
+                                   (format "Depth: ~a\n" (add1 n))
+                                   (format "Its last attempt fails due to:\n~a" (align-lines str)))
+                    (current-continuation-marks)))
+            (Right (update-info i))))
+       (((errorR (at value _))) (Left value)))
+      ((retry n) try))
+     (lambda (c)
+       (Left
+        (>>>
+         #f
+         ($ (lambda/curry/match
+             #:name re-raiser
+             (((errorR (at value _))) (Right (raised value c)))))
+         (lambda (_) (try)))))))))
 
 ;; functions
 (define retry (Yv make-retry))
@@ -47,6 +71,4 @@
   (lambda/curry/match
    #:name retry/raise
    ((n try)
-    (>>> #f
-         ($ (lambda/curry/match #:name retry-raiser (((errorR (at value _))) (raise value))))
-         ((retry n) try)))))
+    (>>> (init-info) ((retry n) try)))))
