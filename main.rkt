@@ -14,7 +14,7 @@
 
 @section{Plugin System}
 
-@CHUNK[<core>
+@CHUNK[<core-plugin-system>
        (module core-pkg racket/base
          (require racket/contract json)
          (provide (contract-out
@@ -42,7 +42,7 @@
          (define (put name core) (hash-set! pkgs name core))
          (define (get name) (hash-ref pkgs name)))]
 
-所有核心组件都通过这个包管理系统来注册和使用。在这里通过@racket[contract]定义了@tech{core}。
+所有核心组件都通过这个包管理系统来注册和使用。在这里通过@racket[contract]定义了@deftech{core}。
 
 @section{Context and Protocol}
 
@@ -531,7 +531,7 @@ Racket的文学式编程语言要求要有一个提纲把文档所有内容收�
 
 @CHUNK[
        <*>
-       <core>
+       <core-plugin-system>
        <context>
        <test>
        <configuration>
