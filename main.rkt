@@ -3,6 +3,8 @@
 @title{OpenAI ChatGPT Client}
 @author[(author+email "张昊" "zhanghao at antigen dot top")]
 
+@require[(for-label racket net/http-easy net/url json)]
+
 @section{Introduction}
 [这个应用实际上是针对@hyperlink["https://mitp-content-server.mit.edu/books/content/sectbyfn/books_pres_0/6515/sicp.zip/index.html"]{SICP}
 第三章“从函数式编程的视角看待时间”这个观点的一次实践。本文采用了@hyperlink["https://docs.racket-lang.org/scribble/lp.html"]{文学式编程}的风格，
@@ -544,4 +546,5 @@ Racket的文学式编程语言要求要有一个提纲把文档所有内容收�
 @itemlist[
           @item{2023.12 添加了重试的功能，改进了配置、异常处理和程序退出。}
           @item{2024.01 改良了交互模式。}
+          @item{2024.03 实现了插件系统。}
           ]
