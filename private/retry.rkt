@@ -40,28 +40,26 @@
    #:name make-retry
    ((retry n try)
     (>>>/steps
-     ($ (lambda/curry/match
-         #:name return
-         (((errorR (at value _))) (Right value))))
      ($
       (lambda/curry/match
        #:name retry-limit-checker
-       (((errorR (at (raised str (and i (info dep))) _)))
+       (((errorR (at (raised str i) _)))
+        (define dep (info-dep i))
         (if (= n dep)
             (raise (exn:fail:chat:retry-limit
                     (string-append "make-retry: hit the limit\n"
                                    (format "Depth: ~a\n" (add1 n))
                                    (format "Its last attempt fails due to:\n~a" (align-lines str)))
                     (current-continuation-marks)))
-            (Right (update-info i))))
-       (((errorR (at value _))) (Left value)))
+            (Right (update-info i)))))
       ((retry n) try))
      (lambda (c)
-       (Left
+       (define (return v) (if (raised? v) (Left v) (Right v)))
+       (return
         (>>>
          #f
          ($ (lambda/curry/match
-             #:name re-raiser
+             #:name left-wrapper
              (((errorR (at value _))) (Right (raised value c)))))
          (lambda (_) (try)))))))))
 
