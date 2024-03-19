@@ -12,23 +12,51 @@
 
 由于难以统计prompt的token数量，这个应用并没有实现流式传输。
 
+@section{Plugin System}
+
+@CHUNK[<core>
+       (module core-pkg racket/base
+         (require racket/contract json)
+         (provide (contract-out
+                   (struct core
+                     ((system-prompt (-> jsexpr?))
+                      (make-request-json (-> string? (listof jsexpr?) jsexpr?))
+                      (retrieve-content-from-json (-> jsexpr? string?))
+                      (retrieve-usage-from-json (-> jsexpr? (values exact-nonnegative-integer?
+                                                                    exact-nonnegative-integer?
+                                                                    exact-nonnegative-integer?)))
+                      (merge-new-content-to-history (-> (or/c 'requests 'response)
+                                                        (listof string?)
+                                                        (listof jsexpr?)
+                                                        (listof jsexpr?)))))
+                   (put (-> (and/c string? (lambda (nm) (not (hash-has-key? pkgs nm))))
+                            core?
+                            any))
+                   (get (-> string? core?))))
+         (struct core (system-prompt
+                       make-request-json
+                       retrieve-content-from-json
+                       retrieve-usage-from-json
+                       merge-new-content-to-history))
+         (define pkgs (make-hash))
+         (define (put name core) (hash-set! pkgs name core))
+         (define (get name) (hash-ref pkgs name)))]
+
+所有核心组件都通过这个包管理系统来注册和使用。在这里通过@racket[contract]定义了@tech{core}。
+
 @section{Context and Protocol}
-
-需要导入的模块如下。
-
-@CHUNK[<import>
-       (require racket/base racket/class racket/stream racket/contract json "private/stream.rkt" "private/error.rkt" "private/retry.rkt")]
 
 接下来我们要绑定如下这些标识符。
 
 @CHUNK[<export>
        (provide token-logger total-token-logger prompt-token-logger completion-token-logger retry-logger
                 (contract-out (context% (class/c (init-field (model string?)
-                                                             (system string?)
                                                              (input (stream/c (or/c 'reset string? (listof string?))))
                                                              (send/recv (-> any/c any/c jsexpr?))
                                                              (probe (-> any/c any))
-                                                             (retry-limit exact-nonnegative-integer?)))))
+                                                             (retry-limit exact-nonnegative-integer?)
+                                                             (core-structure core?)
+                                                             ))))
                 (struct-out exn:fail:chat)
                 (struct-out exn:fail:chat:retry-limit))
        ]
@@ -50,21 +78,6 @@
        (define retry-logger (make-logger #f (current-logger)))]
 
 @CHUNK[<utilities>
-       (define (make-message role cont)
-         (hasheq 'role role 'content cont))
-       (define (retrieve-content js)
-         (hash-ref
-          (hash-ref
-           (list-ref
-            (hash-ref js 'choices)
-            0)
-           'message)
-          'content))
-       (define (retrieve-usage js)
-         (let ((table (hash-ref js 'usage)))
-           (values (hash-ref table 'total_tokens)
-                   (hash-ref table 'prompt_tokens)
-                   (hash-ref table 'completion_tokens))))
        (define (return-fail msg)
          (define (report str) (log-message retry-logger 'info 'Retry str))
          (define (message->string msg) (if msg msg "unknown"))
@@ -84,25 +97,24 @@
 @CHUNK[<handlers>
        (define (normal history requests)
          (let/cc cc
-           (define new-messages (map (lambda (request) (make-message "user" request)) requests))
            (code:comment "Send and receive data")
+           (define new-history (merge-new-content-to-history 'requests requests (cdr history)))
            (define response
              (send/recv
               (code:comment "Retry occurs only when send/recv wants to raise an exception")
               (lambda ((msg #f)) (cc (return-fail msg)))
-              (hasheq 'model model
-                      'messages (reverse (append new-messages (cdr history))))))
+              (make-request-json model new-history)))
            (code:comment "Inform probes and loggers, and return updated history")
-           (let-values (((content) (retrieve-content response))
-                        ((total prompt completion) (retrieve-usage response)))
+           (let-values (((content) (retrieve-content-from-json response))
+                        ((total prompt completion) (retrieve-usage-from-json response)))
              (probe content)
              (log-tokens total prompt completion)
 
              (Right (cons (map + (list total prompt completion) (car history))
-                          (cons (make-message "assistant" content) (append new-messages (cdr history))))))))
+                          (merge-new-content-to-history 'response (list content) new-history))))))
        (define (reset history _)
          (code:comment "Conversations are discarded while token usage is preserved")
-         (Right (list (car history) (make-message "system" system))))]
+         (Right (list (car history) (system-prompt))))]
 
 在这里定义两种事件。
 
@@ -125,7 +137,7 @@
          (code:comment "An accumulator represented as a stream")
          (letrec ((history-stream
                    (stream-cons #:eager
-                                (list (list 0 0 0) (make-message "system" system))
+                                (list (list 0 0 0) (system-prompt))
                                 (stream-map*
                                  (lambda (hs rq) (retry retry-limit (lambda () (dispatch hs rq))))
                                  history-stream
@@ -137,88 +149,108 @@
 以下是@racket[context%]的完整定义。
 
 @CHUNK[<context>
-       <import>
-       <export>
-       <loggers>
+       (module* context racket/base
+         (require racket/base racket/class racket/stream racket/contract racket/match
+                  json
+                  (submod ".." core-pkg)
+                  "private/stream.rkt" "private/error.rkt" "private/retry.rkt")
+         <export>
+         <loggers>
 
-       (define context%
-         (class object%
-           (init-field model system input send/recv probe retry-limit)
+         (define context%
+           (class object%
+             (init-field model input send/recv probe retry-limit core-structure)
 
-           (super-new)
+             (super-new)
 
-           <utilities>
-           <handlers>
-           <dispatcher>
-           <accumulator>
+             (match-define (core system-prompt
+                                 make-request-json
+                                 retrieve-content-from-json
+                                 retrieve-usage-from-json
+                                 merge-new-content-to-history)
+               core-structure)
 
-           (code:comment "Log the total amount of tokens")
-           (keyword-apply log-tokens '(#:prefix) '("All") (car (stream-last (make-history-stream input))))))]
+             <utilities>
+             <handlers>
+             <dispatcher>
+             <accumulator>
+
+             (code:comment "Log the total amount of tokens")
+             (keyword-apply log-tokens '(#:prefix) '("All") (car (stream-last (make-history-stream input)))))))]
 
 @section{Test}
 
-可以参考下面这个测试用例使用@racket[logger]。你也可以根据它理解整个程序的工作流程。
+可以参考下面这个测试用例使用@racket[logger]和设计新的@tech{core}。你也可以根据它理解整个程序的工作流程。
 
 @CHUNK[<test>
-       (module* test hasket
+       (module* test racket/base
          (code:comment "Any code in this `test` submodule runs when this file is run using DrRacket")
          (code:comment "or with `raco test`. The code here does not run when this file is")
          (code:comment "required by another module.")
 
-         (require rackunit racket/vector racket/class (submod ".."))
+         (require rackunit
+                  racket/generator racket/vector racket/class
+                  (submod ".." context) (submod ".." core-pkg))
 
-         (check-exn (lambda/curry/match #:name checker
-                                        (((exn:fail:chat:retry-limit msg _)) (string=? msg "make-retry: hit the limit\nDepth: 1\nIts last attempt fails due to:\n\tunknown"))
-                                        ((_) #f))
-                    (lambda () (new context% (model "") (system "") (input (in-list (list ""))) (retry-limit 0) (send/recv (lambda (fl _) (fl))) (probe void))))
+         (define retry-log-receiver (make-log-receiver retry-logger 'info))
+         (define token-log-receiver (make-log-receiver token-logger 'info))
 
-         (define log-receiver (make-log-receiver (current-logger) 'info))
+         (define int-generator (generator () (let loop ((i 0)) (yield i) (loop (add1 i)))))
+         (define (send/recv left js)
+           (define int (int-generator))
+           (if (and (>= int 3) (<= int 4))
+               js
+               (left "a")))
+         (define (probe v) (void))
+         (define model "gpt-3.5-turbo")
+         (define input (in-list (list "1" (list "2" "3") 'reset)))
 
-         (define tt (random 50 100))
-         (define pt (random 0 tt))
-         (define ct (- tt pt))
-         (define ss (make-string (random 0 100) #\a))
-         (define us (make-string (random 0 100) #\b))
+         (define tt 12)
+         (define pt 6)
+         (define ct 6)
 
-         (define rb (box #f))
+         (define core-structure
+           (core
+            (lambda () "system prompt")
+            (lambda (_ history) history)
+            (lambda (_) "Hello!")
+            (lambda (_) (values tt pt ct))
+            (lambda (_ requests history)
+              (append history requests))))
+         (define name (symbol->string (gensym 'core)))
+         (put name core-structure)
 
-         (void
-          (new context%
-               (model "gpt-3.5-turbo")
-               (system ss)
-               (input (in-list (list us 'reset (list us))))
-               (retry-limit 1)
-               (send/recv
-                (lambda (fl js)
-                  (cond ((not (unbox rb)) (set-box! rb #t) (fl)))
-                  (hasheq
-                   'usage
-                   (hasheq 'total_tokens tt
-                           'prompt_tokens pt
-                           'completion_tokens ct)
-                   'choices
-                   (list
-                    (hasheq
-                     'message
-                     (hasheq 'content
-                             (hash-ref js 'messages)))))))
-               (probe (lambda (response)
-                        (check-match response
-                                     (list (hash-table ('role "system") ('content ass))
-                                           (hash-table ('role "user") ('content aus)))
-                                     (and (string=? ss ass) (string=? us aus)))))))
+         (define (make-context limit)
+           (new context%
+                (model model)
+                (input input)
+                (send/recv send/recv)
+                (probe probe)
+                (retry-limit limit)
+                (core-structure (get name))))
+
+         (void (make-context 3))
 
          (define (log-message=? v1 v2) (check-equal? (vector-copy v1 0 2) v2))
-         (log-message=? (sync log-receiver) (vector 'info "Retry: unknown"))
-         (log-message=? (sync log-receiver) (vector 'info (format "Tokens: ~a" tt)))
-         (log-message=? (sync log-receiver) (vector 'info (format "PromptTokens: ~a" pt)))
-         (log-message=? (sync log-receiver) (vector 'info (format "CompletionTokens: ~a" ct)))
-         (log-message=? (sync log-receiver) (vector 'info (format "Tokens: ~a" tt)))
-         (log-message=? (sync log-receiver) (vector 'info (format "PromptTokens: ~a" pt)))
-         (log-message=? (sync log-receiver) (vector 'info (format "CompletionTokens: ~a" ct)))
-         (log-message=? (sync log-receiver) (vector 'info (format "AllTokens: ~a" (* 2 tt))))
-         (log-message=? (sync log-receiver) (vector 'info (format "AllPromptTokens: ~a" (* 2 pt))))
-         (log-message=? (sync log-receiver) (vector 'info (format "AllCompletionTokens: ~a" (* 2 ct)))))]
+         (log-message=? (sync retry-log-receiver) (vector 'info "Retry: a"))
+         (log-message=? (sync retry-log-receiver) (vector 'info "Retry: a"))
+         (log-message=? (sync retry-log-receiver) (vector 'info "Retry: a"))
+         (log-message=? (sync token-log-receiver) (vector 'info (format "Tokens: ~a" tt)))
+         (log-message=? (sync token-log-receiver) (vector 'info (format "PromptTokens: ~a" pt)))
+         (log-message=? (sync token-log-receiver) (vector 'info (format "CompletionTokens: ~a" ct)))
+         (log-message=? (sync token-log-receiver) (vector 'info (format "Tokens: ~a" tt)))
+         (log-message=? (sync token-log-receiver) (vector 'info (format "PromptTokens: ~a" pt)))
+         (log-message=? (sync token-log-receiver) (vector 'info (format "CompletionTokens: ~a" ct)))
+         (log-message=? (sync token-log-receiver) (vector 'info (format "AllTokens: ~a" (* 2 tt))))
+         (log-message=? (sync token-log-receiver) (vector 'info (format "AllPromptTokens: ~a" (* 2 pt))))
+         (log-message=? (sync token-log-receiver) (vector 'info (format "AllCompletionTokens: ~a" (* 2 ct))))
+
+         (check-exn
+          (lambda (e)
+            (and (exn:fail:chat:retry-limit? e)
+                 (string=? (exn-message e)
+                           "make-retry: hit the limit\nDepth: 7\nIts last attempt fails due to:\n\ta")))
+          (lambda () (make-context 6))))]
 
 @section{Configuration}
 
@@ -230,6 +262,8 @@
        (module config racket/base
          (require racket/contract net/http-easy)
          (provide (contract-out
+                   (url-prefix (box/c string?))
+                   (core-name (box/c string?))
                    (extra-proxies (box/c (listof proxy?)))
                    (model (box/c string?))
                    (system (box/c string?))
@@ -241,6 +275,8 @@
                    (idle-timeout (box/c (and/c real? positive?)))
                    (rate-limit (box/c (and/c real? positive?)))
                    (retry-limit (box/c exact-nonnegative-integer?))))
+         (define url-prefix (box "https://api.openai.com"))
+         (define core-name (box "default"))
          (define extra-proxies (box null))
          (define model (box "gpt-3.5-turbo"))
          (define system (box "You are a helpful assistant."))
@@ -252,6 +288,49 @@
          (define idle-timeout (box 600))
          (define rate-limit (box 2))
          (define retry-limit (box 2)))]
+
+@section{Default Core}
+
+默认的@tech{core}实现如下。这个@tech{core}实现了与@italic{openai api}一般的交互。
+之所以说是一般，是因为没有实现@italic{streaming}。
+原因有很多，最重要的一点是流式传输无法使用racket实现完整的token统计。
+
+如果用户需要自定义一套实用的@tech{core}，可以参考这个模块。
+
+@CHUNK[<default>
+       (module* default-core-pkg racket/base
+         (require (submod ".." core-pkg) (submod ".." config))
+
+         (code:comment "Utilities")
+         (define (make-message role cont)
+           (hasheq 'role role 'content cont))
+         (define (retrieve-content js)
+           (hash-ref
+            (hash-ref
+             (list-ref
+              (hash-ref js 'choices)
+              0)
+             'message)
+            'content))
+         (define (retrieve-usage js)
+           (let ((table (hash-ref js 'usage)))
+             (values (hash-ref table 'total_tokens)
+                     (hash-ref table 'prompt_tokens)
+                     (hash-ref table 'completion_tokens))))
+         (define (make-request model history)
+           (hasheq 'model model 'messages history))
+         (define (merge mode requests history)
+           (append history
+                   (map
+                    (lambda (request) (make-message (if (eq? mode 'requests) "user" "assistant") request))
+                    requests)))
+
+         (define core-structure (core (lambda () (make-message "system" (unbox system)))
+                                      make-request
+                                      retrieve-content
+                                      retrieve-usage
+                                      merge))
+         (put "default" core-structure))]
 
 @section{Commandline}
 
@@ -286,6 +365,8 @@
        (command-line
         #:program (short-program+command-name)
         #:once-each
+        [("-u" "--url") u "Specify the URL prefix." (set-box! url-prefix u)]
+        [("-C" "--core") c "Specify the core." (set-box! core-name c)]
         [("-m" "--model") m "Specify the model." (set-box! model m)]
         [("-s" "--system") s "Specify the system prompt." (set-box! system s)]
         [("-I" "--no-interact") "Turn off the interactive mode." (set-box! interact? #f)]
@@ -350,7 +431,7 @@
                                    (exn:fail:http-easy? (lambda (exn) (fail (exn-message exn)))))
                      (proc))))
                 (code:comment "The url constant")
-                (url (string->url "https://api.openai.com/v1/chat/completions")))
+                (url (string->url (string-append (unbox url-prefix) "/v1/chat/completions"))))
            (plumber-add-flush! (current-plumber) (lambda (_) (session-close! session)))
            (lambda (fail input)
              (call/handler
@@ -422,9 +503,11 @@ driver loop在这里直接用输入流表示，如前所述，一种是通过模
          (code:comment "http://docs.racket-lang.org/guide/Module_Syntax.html#%28part._main-and-test%29")
 
          (require racket/cmdline racket/match racket/list racket/class racket/stream racket/promise
-                (submod "..") (submod ".." config) "private/stream.rkt"
-                raco/command-name
-                net/http-easy net/url)
+                  (submod ".." context) (submod ".." config) (submod ".." default-core-pkg)
+                  (rename-in (only-in (submod ".." core-pkg) get) (get pkg-get))
+                  "private/stream.rkt"
+                  raco/command-name
+                  net/http-easy net/url)
 
          <commandline>
          <communication>
@@ -434,11 +517,11 @@ driver loop在这里直接用输入流表示，如前所述，一种是通过模
          (void
           (new context%
                (model (unbox model))
-               (system (unbox system))
                (retry-limit (unbox retry-limit))
                (input (make-limited-stream input-stream (unbox rate-limit)))
                (send/recv send/recv)
-               (probe (unbox probe)))))]
+               (probe (unbox probe))
+               (core-structure (pkg-get (unbox core-name))))))]
 
 从这里可以发现，想要从程序中安全退出有且只有一种方式，即终止输入流。
 
@@ -448,9 +531,11 @@ Racket的文学式编程语言要求要有一个提纲把文档所有内容收�
 
 @CHUNK[
        <*>
+       <core>
        <context>
        <test>
        <configuration>
+       <default>
        <main>
        ]
 
