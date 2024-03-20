@@ -18,19 +18,21 @@
 
 @CHUNK[<core-plugin-system>
        (module core-pkg racket/base
-         (require racket/contract json)
+         (require racket/contract)
          (provide (contract-out
+                   #:forall (input-item? request? response? output-item?)
                    (struct core
-                     ((system-prompt (-> jsexpr?))
-                      (make-request-json (-> string? (listof jsexpr?) jsexpr?))
-                      (retrieve-content-from-json (-> jsexpr? string?))
-                      (retrieve-usage-from-json (-> jsexpr? (values exact-nonnegative-integer?
-                                                                    exact-nonnegative-integer?
-                                                                    exact-nonnegative-integer?)))
+                     ((system-prompt (-> input-item?))
+                      (make-request-json (-> string? (listof input-item?) request?))
+                      (retrieve-content-from-json (-> response? output-item?))
+                      (retrieve-usage-from-json (-> response? (values exact-nonnegative-integer?
+                                                                      exact-nonnegative-integer?
+                                                                      exact-nonnegative-integer?)))
                       (merge-new-content-to-history (-> (or/c 'requests 'response)
-                                                        (listof string?)
-                                                        (listof jsexpr?)
-                                                        (listof jsexpr?)))))
+                                                        (listof output-item?)
+                                                        (listof input-item?)
+                                                        (listof input-item?)))
+                      (send/recv (-> (-> (or/c #f string?) any) request? response?))))
                    (put (-> (and/c string? (lambda (nm) (not (hash-has-key? pkgs nm))))
                             core?
                             any))
@@ -39,7 +41,8 @@
                        make-request-json
                        retrieve-content-from-json
                        retrieve-usage-from-json
-                       merge-new-content-to-history))
+                       merge-new-content-to-history
+                       send/recv))
          (define pkgs (make-hash))
          (define (put name core) (hash-set! pkgs name core))
          (define (get name) (hash-ref pkgs name)))]
@@ -54,7 +57,6 @@
        (provide token-logger total-token-logger prompt-token-logger completion-token-logger retry-logger
                 (contract-out (context% (class/c (init-field (model string?)
                                                              (input (stream/c (or/c 'reset string? (listof string?))))
-                                                             (send/recv (-> any/c any/c jsexpr?))
                                                              (probe (-> any/c any))
                                                              (retry-limit exact-nonnegative-integer?)
                                                              (core-structure core?)
@@ -153,7 +155,6 @@
 @CHUNK[<context>
        (module* context racket/base
          (require racket/base racket/class racket/stream racket/contract racket/match
-                  json
                   (submod ".." core-pkg)
                   "private/stream.rkt" "private/error.rkt" "private/retry.rkt")
          <export>
@@ -161,7 +162,8 @@
 
          (define context%
            (class object%
-             (init-field model input send/recv probe retry-limit core-structure)
+             (init-field model input probe retry-limit
+                         core-structure)
 
              (super-new)
 
@@ -169,7 +171,8 @@
                                  make-request-json
                                  retrieve-content-from-json
                                  retrieve-usage-from-json
-                                 merge-new-content-to-history)
+                                 merge-new-content-to-history
+                                 send/recv)
                core-structure)
 
              <utilities>
@@ -218,7 +221,8 @@
             (lambda (_) "Hello!")
             (lambda (_) (values tt pt ct))
             (lambda (_ requests history)
-              (append history requests))))
+              (append history requests))
+            send/recv))
          (define name (symbol->string (gensym 'core)))
          (put name core-structure)
 
@@ -226,7 +230,6 @@
            (new context%
                 (model model)
                 (input input)
-                (send/recv send/recv)
                 (probe probe)
                 (retry-limit limit)
                 (core-structure (get name))))
@@ -291,6 +294,71 @@
          (define rate-limit (box 2))
          (define retry-limit (box 2)))]
 
+@section{Communication}
+
+我们使用@hyperlink["https://docs.racket-lang.org/http-easy/index.html"]{http-easy}库绑定与服务器交互的相关函数。
+
+@racket[make-send/recv]的例子见@italic{Default Core}一节。
+
+@CHUNK[<communication>
+       (module* communication racket/base
+         (require racket/match racket/list
+                  net/http-easy net/url
+                  (submod ".." config))
+         (provide send/recv-wrapper)
+
+         (code:comment "A procedure used to wrap make-send/recv")
+         (code:comment "Currently HTTP(S) proxies are supported")
+         (define (send/recv-wrapper make-send/recv)
+             (let* ((code:comment "Proxies")
+                    (code:comment "Records: (listof (list/c <scheme> (or/c #f <server>) <maker>))")
+                    (code:comment "Server: any/c")
+                    (code:comment "Maker: (-> <server> proxy?)")
+                    (format-http*-proxy-server
+                     (lambda (server)
+                       (match server
+                         ((list scheme host port)
+                          (url->string
+                           (make-url scheme
+                                     #f
+                                     host
+                                     port
+                                     #f
+                                     null
+                                     null
+                                     #f))))))
+                    (proxy-records (list (list "http" (proxy-server-for "http") (compose1 make-http-proxy format-http*-proxy-server))
+                                         (list "https" (proxy-server-for "https") (compose1 make-https-proxy format-http*-proxy-server))))
+                    (proxies
+                     (append (unbox extra-proxies)
+                             (filter-map
+                              (lambda (record)
+                                (and (cadr record) ((caddr record) (cadr record))))
+                              proxy-records)))
+                    (code:comment "Pool and session configuration")
+                    (pool-config (make-pool-config #:idle-timeout (unbox idle-timeout)))
+                    (session (make-session #:proxies proxies #:pool-config pool-config))
+                    (code:comment "Timeout configuration")
+                    (timeout-config (make-timeout-config #:request (unbox request-timeout)))
+                    (call/handler
+                     (lambda (fail proc)
+                       (with-handlers ((exn:fail:http-easy:timeout?
+                                        (lambda (exn) (fail (format "~a: timed out" (exn:fail:http-easy:timeout-kind exn)))))
+                                       (exn:fail:http-easy? (lambda (exn) (fail (exn-message exn)))))
+                         (proc))))
+                    (code:comment "The url constant")
+                    (url (string->url (string-append (unbox url-prefix) "/v1/chat/completions")))
+                    (code:comment "A normal send/recv function")
+                    (send/recv (make-send/recv timeout-config (unbox token) url)))
+               (plumber-add-flush! (current-plumber) (lambda (_) (session-close! session)))
+               (code:comment "A send/recv function running in a proper environment")
+               (lambda (fail input)
+                 (call/handler
+                  fail
+                  (lambda ()
+                    (parameterize ((current-session session))
+                      (send/recv fail input))))))))]
+
 @section{Default Core}
 
 默认的@tech{core}实现如下。这个@tech{core}实现了与@italic{openai api}一般的交互。
@@ -301,7 +369,13 @@
 
 @CHUNK[<default>
        (module* default-core-pkg racket/base
-         (require (submod ".." core-pkg) (submod ".." config))
+         (require
+          racket/match
+          net/http-easy
+          (submod ".." communication)
+          (rename-in (only-in (submod ".." core-pkg) core put) (put pkg-put))
+          (submod ".." config))
+         (provide install-default)
 
          (code:comment "Utilities")
          (define (make-message role cont)
@@ -326,13 +400,29 @@
                    (map
                     (lambda (request) (make-message (if (eq? mode 'requests) "user" "assistant") request))
                     requests)))
+         (define ((make-send/recv timeout-config token url) fail input)
+           (match
+               (post
+                url
+                #:close? #t
+                #:timeouts timeout-config
+                #:auth (bearer-auth token)
+                #:data (json-payload input))
+             ((response #:status-code 200
+                        #:headers ((content-type (regexp #"application/json")))
+                        #:json output)
+              output)
+             ((response #:status-code code #:headers ((content-type type)) #:body body)
+              (fail (format "code: ~a\ncontent-type: ~a\nbody: ~s" code type body)))))
 
-         (define core-structure (core (lambda () (make-message "system" (unbox system)))
-                                      make-request
-                                      retrieve-content
-                                      retrieve-usage
-                                      merge))
-         (put "default" core-structure))]
+         (define (install-default)
+           (define core-structure (core (lambda () (make-message "system" (unbox system)))
+                                        make-request
+                                        retrieve-content
+                                        retrieve-usage
+                                        merge
+                                        (send/recv-wrapper make-send/recv)))
+           (pkg-put "default" core-structure)))]
 
 @section{Commandline}
 
@@ -390,70 +480,6 @@
         )
        ]
 
-然后我们使用@hyperlink["https://docs.racket-lang.org/http-easy/index.html"]{http-easy}库绑定与服务器交互的相关函数。
-
-@CHUNK[<communication>
-       (code:comment "A procedure used for HTTPS communication")
-       (code:comment "Currently HTTP(S) proxies are supported")
-       (define send/recv
-         (let* ((code:comment "Proxies")
-                (code:comment "Records: (listof (list/c <scheme> (or/c #f <server>) <maker>))")
-                (code:comment "Server: any/c")
-                (code:comment "Maker: (-> <server> proxy?)")
-                (format-http*-proxy-server
-                 (lambda (server)
-                   (match server
-                     ((list scheme host port)
-                      (url->string
-                       (make-url scheme
-                                 #f
-                                 host
-                                 port
-                                 #f
-                                 null
-                                 null
-                                 #f))))))
-                (proxy-records (list (list "http" (proxy-server-for "http") (compose1 make-http-proxy format-http*-proxy-server))
-                                     (list "https" (proxy-server-for "https") (compose1 make-https-proxy format-http*-proxy-server))))
-                (proxies
-                 (append (unbox extra-proxies)
-                         (filter-map
-                          (lambda (record)
-                            (and (cadr record) ((caddr record) (cadr record))))
-                          proxy-records)))
-                (code:comment "Pool and session configuration")
-                (pool-config (make-pool-config #:idle-timeout (unbox idle-timeout)))
-                (session (make-session #:proxies proxies #:pool-config pool-config))
-                (code:comment "Timeout configuration")
-                (timeout-config (make-timeout-config #:request (unbox request-timeout)))
-                (call/handler
-                 (lambda (fail proc)
-                   (with-handlers ((exn:fail:http-easy:timeout?
-                                    (lambda (exn) (fail (format "~a: timed out" (exn:fail:http-easy:timeout-kind exn)))))
-                                   (exn:fail:http-easy? (lambda (exn) (fail (exn-message exn)))))
-                     (proc))))
-                (code:comment "The url constant")
-                (url (string->url (string-append (unbox url-prefix) "/v1/chat/completions"))))
-           (plumber-add-flush! (current-plumber) (lambda (_) (session-close! session)))
-           (lambda (fail input)
-             (call/handler
-              fail
-              (lambda ()
-                (parameterize ((current-session session))
-                  (match
-                      (post
-                       url
-                       #:close? #t
-                       #:timeouts timeout-config
-                       #:auth (bearer-auth (unbox token))
-                       #:data (json-payload input))
-                    ((response #:status-code 200
-                               #:headers ((content-type (regexp #"application/json")))
-                               #:json output)
-                     output)
-                    ((response #:status-code code #:headers ((content-type type)) #:body body)
-                     (fail (format "code: ~a\ncontent-type: ~a\nbody: ~s" code type body))))))))))]
-
 接下来对输入流作速率限制。这里又使用了@racket[stream]，实际上限制的是每一次输入及其之前输入的平均速率。
 
 @CHUNK[<limit>
@@ -504,24 +530,24 @@ driver loop在这里直接用输入流表示，如前所述，一种是通过模
          (code:comment "does not run when this file is required by another module. Documentation:")
          (code:comment "http://docs.racket-lang.org/guide/Module_Syntax.html#%28part._main-and-test%29")
 
-         (require racket/cmdline racket/match racket/list racket/class racket/stream racket/promise
+         (require racket/cmdline racket/match racket/class racket/stream racket/promise
                   (submod ".." context) (submod ".." config) (submod ".." default-core-pkg)
                   (rename-in (only-in (submod ".." core-pkg) get) (get pkg-get))
                   "private/stream.rkt"
-                  raco/command-name
-                  net/http-easy net/url)
+                  raco/command-name)
 
          <commandline>
-         <communication>
          <limit>
          <input>
+
+         (code:comment "Install the default package")
+         (install-default)
 
          (void
           (new context%
                (model (unbox model))
                (retry-limit (unbox retry-limit))
                (input (make-limited-stream input-stream (unbox rate-limit)))
-               (send/recv send/recv)
                (probe (unbox probe))
                (core-structure (pkg-get (unbox core-name))))))]
 
@@ -537,6 +563,7 @@ Racket的文学式编程语言要求要有一个提纲把文档所有内容收�
        <context>
        <test>
        <configuration>
+       <communication>
        <default>
        <main>
        ]
