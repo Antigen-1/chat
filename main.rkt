@@ -22,7 +22,7 @@
          (provide (contract-out
                    #:forall (input-item? request? response? output-item?)
                    (struct core
-                     ((system-prompt (-> input-item?))
+                     ((system-prompt input-item?)
                       (make-request-json (-> string? (listof input-item?) request?))
                       (retrieve-content-from-json (-> response? output-item?))
                       (retrieve-usage-from-json (-> response? (values exact-nonnegative-integer?
@@ -96,7 +96,7 @@
          (log-message prompt-token-logger 'info (add-prefix 'PromptTokens) (format "~a" p))
          (log-message completion-token-logger 'info (add-prefix 'CompletionTokens) (format "~a" c)))]
 
-封装、解析数据包，报告token使用和异常的实用函数。
+报告token使用和异常的实用函数。
 
 @CHUNK[<handlers>
        (define (normal history requests)
@@ -118,7 +118,7 @@
                           (merge-new-content-to-history 'response (list content) new-history))))))
        (define (reset history _)
          (code:comment "Conversations are discarded while token usage is preserved")
-         (Right (list (car history) (system-prompt))))]
+         (Right (list (car history) system-prompt)))]
 
 在这里定义两种事件。
 
@@ -141,7 +141,7 @@
          (code:comment "An accumulator represented as a stream")
          (letrec ((history-stream
                    (stream-cons #:eager
-                                (list (list 0 0 0) (system-prompt))
+                                (list (list 0 0 0) system-prompt)
                                 (stream-map*
                                  (lambda (hs rq) (retry retry-limit (lambda () (dispatch hs rq))))
                                  history-stream
@@ -216,7 +216,7 @@
 
          (define core-structure
            (core
-            (lambda () "system prompt")
+            "system prompt"
             (lambda (_ history) history)
             (lambda (_) "Hello!")
             (lambda (_) (values tt pt ct))
@@ -416,7 +416,7 @@
               (fail (format "code: ~a\ncontent-type: ~a\nbody: ~s" code type body)))))
 
          (define (install-default)
-           (define core-structure (core (lambda () (make-message "system" (unbox system)))
+           (define core-structure (core (make-message "system" (unbox system))
                                         make-request
                                         retrieve-content
                                         retrieve-usage
@@ -537,11 +537,12 @@ driver loop在这里直接用输入流表示，如前所述，一种是通过模
                   raco/command-name)
 
          <commandline>
-         <limit>
-         <input>
 
          (code:comment "Install the default package")
          (install-default)
+
+         <limit>
+         <input>
 
          (void
           (new context%
