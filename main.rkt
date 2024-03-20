@@ -23,7 +23,7 @@
                    #:forall (input-item? request? response? output-item?)
                    (struct core
                      ((system-prompt input-item?)
-                      (make-request-json (-> string? (listof input-item?) request?))
+                      (make-request-json (-> (listof input-item?) request?))
                       (retrieve-content-from-json (-> response? output-item?))
                       (retrieve-usage-from-json (-> response? (values exact-nonnegative-integer?
                                                                       exact-nonnegative-integer?
@@ -55,8 +55,7 @@
 
 @CHUNK[<export>
        (provide token-logger total-token-logger prompt-token-logger completion-token-logger retry-logger
-                (contract-out (context% (class/c (init-field (model string?)
-                                                             (input (stream/c (or/c 'reset string? (listof string?))))
+                (contract-out (context% (class/c (init-field (input (stream/c (or/c 'reset string? (listof string?))))
                                                              (probe (-> any/c any))
                                                              (retry-limit exact-nonnegative-integer?)
                                                              (core-structure core?)
@@ -107,7 +106,7 @@
              (send/recv
               (code:comment "Retry occurs only when send/recv wants to raise an exception")
               (lambda ((msg #f)) (cc (return-fail msg)))
-              (make-request-json model new-history)))
+              (make-request-json new-history)))
            (code:comment "Inform probes and loggers, and return updated history")
            (let-values (((content) (retrieve-content-from-json response))
                         ((total prompt completion) (retrieve-usage-from-json response)))
@@ -162,7 +161,7 @@
 
          (define context%
            (class object%
-             (init-field model input probe retry-limit
+             (init-field input probe retry-limit
                          core-structure)
 
              (super-new)
@@ -194,7 +193,7 @@
          (code:comment "required by another module.")
 
          (require rackunit
-                  racket/generator racket/vector racket/class
+                  racket/generator racket/vector racket/class racket/list
                   (submod ".." context) (submod ".." core-pkg))
 
          (define retry-log-receiver (make-log-receiver retry-logger 'info))
@@ -206,9 +205,9 @@
            (if (and (>= int 3) (<= int 4))
                js
                (left "a")))
-         (define (probe v) (void))
-         (define model "gpt-3.5-turbo")
          (define input (in-list (list "1" (list "2" "3") 'reset)))
+         (define input-generator (generator () (for ((v (in-list '("1" "3")))) (yield v))))
+         (define (probe v) (check-equal? (input-generator) v))
 
          (define tt 12)
          (define pt 6)
@@ -217,8 +216,8 @@
          (define core-structure
            (core
             "system prompt"
-            (lambda (_ history) history)
-            (lambda (_) "Hello!")
+            (lambda (history) history)
+            last
             (lambda (_) (values tt pt ct))
             (lambda (_ requests history)
               (append history requests))
@@ -228,7 +227,6 @@
 
          (define (make-context limit)
            (new context%
-                (model model)
                 (input input)
                 (probe probe)
                 (retry-limit limit)
@@ -417,7 +415,7 @@
 
          (define (install-default)
            (define core-structure (core (make-message "system" (unbox system))
-                                        make-request
+                                        (lambda (history) (make-request (unbox model) history))
                                         retrieve-content
                                         retrieve-usage
                                         merge
@@ -546,7 +544,6 @@ driver loop在这里直接用输入流表示，如前所述，一种是通过模
 
          (void
           (new context%
-               (model (unbox model))
                (retry-limit (unbox retry-limit))
                (input (make-limited-stream input-stream (unbox rate-limit)))
                (probe (unbox probe))
