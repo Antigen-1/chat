@@ -20,18 +20,18 @@
        (module core-pkg racket/base
          (require racket/contract)
          (provide (contract-out
-                   #:forall (input-item? request? response? output-item?)
+                   #:forall (message? request? response? content?)
                    (struct core
-                     ((system-prompt input-item?)
-                      (make-request-json (-> (listof input-item?) request?))
-                      (retrieve-content-from-json (-> response? output-item?))
+                     ((system-prompt message?)
+                      (make-request-json (-> (listof message?) request?))
+                      (retrieve-content-from-json (-> response? content?))
                       (retrieve-usage-from-json (-> response? (values exact-nonnegative-integer?
                                                                       exact-nonnegative-integer?
                                                                       exact-nonnegative-integer?)))
                       (merge-new-content-to-history (-> (or/c 'requests 'response)
-                                                        (listof output-item?)
-                                                        (listof input-item?)
-                                                        (listof input-item?)))
+                                                        (listof content?)
+                                                        (listof message?)
+                                                        (listof message?)))
                       (send/recv (-> (-> (or/c #f string?) any) request? response?))))
                    (put (-> (and/c string? (lambda (nm) (not (hash-has-key? pkgs nm))))
                             core?
