@@ -393,11 +393,11 @@
                      (hash-ref table 'completion_tokens))))
          (define (make-request model history)
            (hasheq 'model model 'messages history))
-         (define (merge mode requests history)
+         (define (merge mode items history)
            (append history
                    (map
-                    (lambda (request) (make-message (if (eq? mode 'requests) "user" "assistant") request))
-                    requests)))
+                    (lambda (item) (make-message (if (eq? mode 'requests) "user" "assistant") item))
+                    items)))
          (define ((make-send/recv timeout-config token url) fail input)
            (match
                (post
